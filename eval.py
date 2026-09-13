@@ -1,0 +1,1024 @@
+#!/usr/bin/env python3
+"""
+eval_animate_roll.py - Render a rolling diamond animation using the Neural Diamond BSDF.
+
+The hybrid BSDF blends:
+  - DiamondFacet  : analytic Fresnel R/T
+  - Model_M       : neural multi-scatter colour f(wi, wo)
+
+Animation: Diamond rolls/tumbles in 3D space with orbiting camera
+FIXED: Added numerical stability and NaN handling
+"""
+
+import os
+import sys
+import argparse
+import json
+import struct
+import tempfile
+import math
+import numpy as np
+import torch
+from pathlib import Path
+
+# NOTE: mitsuba and drjit are imported *below*, after `config`. Dr.Jit resolves
+# the LLVM shared library on its first JIT initialisation and caches the
+# result, including a failure -- so if it is imported before config sets
+# DRJIT_LIBLLVM_PATH, the later set_variant() dies with
+#     ImportError: the LLVM backend is inactive because the LLVM shared
+#     library ("LLVM-C.dll") could not be found!
+# even when the path is correct by then. That ordering, not the path itself,
+# is what forced every run through the old runner.py wrapper. Keep `config`
+# ahead of any mitsuba/drjit import in every entry point.
+
+# There is a second, older copy of this project at the path below. It used to
+# be prepended to sys.path, which meant that under WSL -- where that path
+# exists -- `config`, `utils`, `neural` and `bsdf` all resolved to the *other*
+# checkout no matter which one you actually ran, so edits made here silently
+# had no effect and the two trees drifted apart. Append instead, so the
+# checkout this file lives in always wins and the old one is only a fallback.
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
+project_root = '/mnt/c/Users/sally/research/diamond_rendering'
+if os.path.exists(project_root) and os.path.abspath(project_root) != _here:
+    sys.path.append(project_root)
+    for subdir in ['utils', 'config', 'neural', 'bsdf']:
+        p = os.path.join(project_root, subdir)
+        if os.path.exists(p): sys.path.append(p)
+
+from config import device, variant
+
+import mitsuba as mi          # noqa: E402  -- must follow `config`, see above
+import drjit as dr            # noqa: E402
+
+from config import parameters as _params
+
+# The older checkout calls this table DIAMOND_PRESETS; this one calls it
+# DIAMOND_VARIANTS. Accept whichever the resolved `config` package provides.
+DIAMOND_VARIANTS = getattr(_params, 'DIAMOND_VARIANTS', None)
+if DIAMOND_VARIANTS is None:
+    DIAMOND_VARIANTS = _params.DIAMOND_PRESETS
+print(f"✓ config.parameters: {_params.__file__} "
+      f"({len(DIAMOND_VARIANTS)} variants)")
+
+# Register NeuralDiamond BSDF
+from bsdf.neural_bsdf import NeuralDiamond
+mi.register_bsdf("neural_diamond", lambda props: NeuralDiamond(props))
+
+mi.set_variant(variant)
+from mitsuba import ScalarTransform4f as sT
+
+from bsdf.analytic_bsdf import DiamondShading
+from bsdf.dispersive_dielectric import DispersiveDielectric
+from bsdf.dispersion import IS_SPECTRAL
+from bsdf.rdm_sampler import build_rdm_sampler
+from utils.studio_env import studio_lighting, display_exposure
+from neural.base_model import Model_M, Model_T
+from neural.drjit_wrapper import MiModelWrapper
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Render a rolling diamond animation with neural shading")
+    parser.add_argument("--checkpoint_name", type=str, required=True)
+    parser.add_argument("--diamond_name", type=str, default='round_brilliant_sharp_culet')
+    parser.add_argument("--spp", type=int, default=64, help="Samples per pixel per frame")
+    parser.add_argument("--width", type=int, default=512)
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--output_dir", type=str, default="rolling_animation")
+    parser.add_argument("--frames", type=int, default=60, help="Number of animation frames")
+    parser.add_argument("--exposure", type=float, default=None,
+                        help="Linear multiplier applied before the gamma curve "
+                             "when writing the PNG (the EXR is always raw "
+                             "radiance). Defaults to utils.studio_env's "
+                             "display_exposure(), which is the value that puts "
+                             "the stone in midtone under the studio rig: about "
+                             "2%% of it clipped and about two thirds in "
+                             "midtone. It tracks the rig, so it stays correct "
+                             "if the panel radiances change.")
+    parser.add_argument("--r_alpha", type=float, default=0.05,
+                        help="Roughness of the analytic direct-reflection lobe S_R. "
+                             "Lower = sharper, brighter highlights (a real polished "
+                             "facet is near-perfectly smooth); GGX peak scales as 1/alpha^2.")
+    parser.add_argument("--max_depth", type=int, default=64,
+                        help="Path integrator max_depth. 64 is converged for this stone. "
+                             "Lower values truncate internal transport, which is how the "
+                             "explicit half of the bounce-count decomposition is rendered: "
+                             "max_depth 2 gives the enter-and-exit paths only.")
+    parser.add_argument("--no_neural", action='store_true',
+                        help="Use analytic dielectric only (ground truth reference)")
+    parser.add_argument("--no_explicit_entry", action='store_true',
+                        help="Disable Route A. The neural BSDF reverts to the "
+                             "S_R + S_M two-lobe form, in which bs.eta is always 1 "
+                             "and no ray ever refracts into the stone, so internal "
+                             "specular transport does not exist. This is the "
+                             "ablation baseline, not a mode to render in.")
+    parser.add_argument("--fps", type=int, default=30, help="Video frames per second")
+    parser.add_argument("--orbit_radius", type=float, default=5.0, help="Camera orbit radius")
+    parser.add_argument("--rotation_speed", type=float, default=1.0, help="Rotation speed multiplier")
+    parser.add_argument("--tile", type=int, default=0,
+                       help="Render each frame in TILE x TILE crops instead of one "
+                            "wavefront, then paste them together. Exact -- pixels are "
+                            "independent -- but it divides peak memory by the number of "
+                            "tiles, which is what makes a larger Model_M renderable: "
+                            "neural/drjit_wrapper.py holds out x in x lanes, and lanes is "
+                            "width*height*spp_per_call. 0 disables tiling. 128 is a good "
+                            "starting point; use the largest tile that fits.")
+    parser.add_argument("--sparkle", action='store_true',
+                       help="Restore the detail the RDM's per-bin mean threw away, using "
+                            "the gathered second moment. With probability p a shading point "
+                            "returns value/p and otherwise zero, with p = 1/(1+r^2) matching "
+                            "the measured within-cell spread r, so the mean is preserved "
+                            "exactly and only the variance changes. Needs a checkpoint "
+                            "gathered after var_m was added.")
+    parser.add_argument("--sparkle_scale", type=float, default=0.02,
+                       help="Edge length of the position lattice the sparkle is hashed on, "
+                            "in scene units (girdle radius is 1). Smaller means finer grain.")
+    parser.add_argument("--clamp_value", type=float, default=10.0, help="Clamp neural BSDF output to this value")
+    parser.add_argument("--no_dispersion", action='store_true',
+                        help="Disable wavelength-dependent IOR. The control "
+                             "condition for any comparison about fire: "
+                             "everything else identical, dispersion off.")
+    return parser.parse_args()
+
+
+# Geometry presets. `config/parameters.py` is the single source of truth --
+# it is what `gather_rdm.py` and `train_models.py` read, so anything defined
+# only here would be a stone the model can never have been trained on.
+#
+# That is not hypothetical: this file used to carry its own dict, which did
+# not contain `round_diamond_gia` (the variant every checkpoint was gathered
+# on) but did contain `princess`. `renders/gt_test_12` and
+# `renders/diamond_test_12` were consequently rendered on a 4-main-facet
+# stone with 21 facets while run_07's model had been fitted to an
+# 8-main-facet stone with 57, and the neural render was being asked to shade
+# facet orientations that do not exist in its training set.
+#
+# The two names below that only ever existed here are kept as aliases so old
+# commands still resolve, but they now resolve to the shared definitions.
+#
+# Keep this table under its own name: rebinding `DIAMOND_VARIANTS` here would
+# shadow the import above, so the shared definitions could no longer be read
+# back, and `main()` looks the preset up as `DIAMOND_PRESETS`.
+DIAMOND_PRESETS = dict(DIAMOND_VARIANTS)
+for _alias, _target in (('round_brilliant_sharp_culet', 'round_diamond_sharp_culet'),
+                        ('round_brilliant_culet', 'round_diamond_gia')):
+    # Tolerate the older checkout, whose table may not carry these names.
+    if _alias not in DIAMOND_PRESETS and _target in DIAMOND_VARIANTS:
+        DIAMOND_PRESETS[_alias] = dict(DIAMOND_VARIANTS[_target])
+DIAMOND_PRESETS.setdefault('princess', dict(
+    girdle_radius=1.0, crown_angle_deg=35.0, pavilion_angle_deg=41.0,
+    table_frac=0.60, num_main_facets=4, culet_radius=0.0,
+    int_ior=2.419, ext_ior=1.000277,
+))
+
+
+def write_ply(path, vertices, normals, faces):
+    with open(path, 'wb') as f:
+        hdr = (
+            "ply\nformat binary_little_endian 1.0\n"
+            f"element vertex {len(vertices)}\n"
+            "property float x\nproperty float y\nproperty float z\n"
+            "property float nx\nproperty float ny\nproperty float nz\n"
+            f"element face {len(faces)}\n"
+            "property list uchar int vertex_indices\nend_header\n"
+        )
+        f.write(hdr.encode('ascii'))
+        f.write(np.concatenate([vertices, normals], axis=1).astype(np.float32).tobytes())
+        for face in faces:
+            f.write(struct.pack('<B', 3))
+            f.write(struct.pack('<3i', *face))
+
+
+def build_diamond_mesh(diamond_params):
+    from ground_truth.brilliant_geometry import make_round_brilliant, make_flat_shaded
+    geometry_keys = {'girdle_radius', 'crown_angle_deg', 'pavilion_angle_deg',
+                     'table_frac', 'num_main_facets', 'culet_radius'}
+    geom = {k: v for k, v in diamond_params.items() if k in geometry_keys}
+    verts, faces = make_round_brilliant(**geom)
+    fv, fn, _, ff = make_flat_shaded(verts, faces)
+    tmp = tempfile.NamedTemporaryFile(suffix='.ply', delete=False)
+    tmp.close()
+    write_ply(tmp.name, fv, fn, ff)
+    return tmp.name, fv, fn, ff
+
+
+def attach_stochastic_detail(checkpoint_dir, bsdf, r_max=3.0):
+    """
+    Load the RDM's second moment and hand the BSDF a per-cell relative spread.
+
+    A bin's stored value is the mean of the paths that landed in it; var_m
+    measures how far those paths scatter around it. The dimensionless ratio
+    the renderer needs is sqrt(var_m) / mean_cell_m -- NOT sqrt(var_m) / rdm_m,
+    which mixes a per-path moment with a density and is not a spread at all.
+
+    Cells with too few paths are set to zero spread: a single path reports zero
+    variance, which is an absence of evidence rather than evidence of a smooth
+    cell, and letting those through would sprinkle sparkle over the parts of
+    the domain that were simply never sampled.
+    """
+    path = os.path.join(checkpoint_dir, 'rdm.npz')
+    d = np.load(path, allow_pickle=True)
+    if 'var_m' not in d or 'mean_cell_m' not in d:
+        print("  ⚠ this checkpoint has no second moment (gathered before "
+              "var_m was added); --sparkle will be inert. Re-gather to use it.")
+        return
+    var, mean, n = d['var_m'], d['mean_cell_m'], d['count_cell_m']
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rel = np.sqrt(np.maximum(var, 0.0)) / np.maximum(mean, 1e-12)
+    rel = np.nan_to_num(rel, nan=0.0, posinf=0.0, neginf=0.0)
+    # One spread per cell, not per channel: the gain multiplies the whole
+    # colour, so splitting it per channel would shift hue as well as intensity.
+    rel = rel.mean(axis=-1)
+    rel = np.where(n >= 8, rel, 0.0)
+    rel = np.clip(rel, 0.0, r_max)
+
+    bsdf.rel_spread = mi.Float(rel.astype(np.float32).ravel())
+    bsdf.spread_dims = rel.shape
+    lit = rel > 0
+    print(f"✓ Stochastic detail from var_m: {int(lit.sum())} of {rel.size} cells "
+          f"carry spread (median r {np.median(rel[lit]) if lit.any() else 0:.2f}, "
+          f"clipped at {r_max})")
+    if lit.any():
+        p = 1.0 / (1.0 + np.median(rel[lit]) ** 2)
+        print(f"    median cell lights up {100 * p:.1f}% of the time at "
+              f"{1 / p:.1f}x, mean preserved")
+
+
+def report_component_split(checkpoint_dir, bsdf):
+    """
+    Load rdm_t and rdm_r and check the analytic components against them.
+
+    These two histograms are gathered on every run but are not fed to any
+    network, and that is deliberate rather than an oversight:
+
+      * rdm_r is a *delta*. Measured on ks_k8, 100% of its energy lies in a
+        single outgoing bin, at the mirror direction to within 0.0 degrees in
+        both theta and phi across all 64 incoming bins. A polished facet is a
+        smooth dielectric, so the depth-1 reflection is specular. Fitting a
+        histogram or a network to it would be approximating a Dirac delta
+        with a 22.5-degree box; the analytic lobe in eval_r() is strictly
+        better. Soh & Montazeri reach the same conclusion for their R
+        component (section 4.2, "beneficial to model this component
+        analytically as opposed to fitting it").
+
+      * rdm_t sets the T/R proportion, which the paper learns as
+        P(T | omega_i) with Model_T. For a smooth dielectric that quantity is
+        Fresnel, so the network is optional here in a way it is not for yarn.
+
+    Neither is silently ignored any more: this prints the measured albedo
+    split beside what the BSDF's analytic path actually uses, so a mismatch
+    shows up at load time instead of as an unexplained brightness error. It is
+    a diagnostic only -- nothing here feeds the render.
+    """
+    path = os.path.join(checkpoint_dir, 'rdm.npz')
+    if not os.path.exists(path):
+        return
+    try:
+        d = np.load(path, allow_pickle=True)
+        rdm_t, rdm_r, rdm_m, sa = d['rdm_t'], d['rdm_r'], d['rdm_m'], d['sa']
+        theta_i = d['x'][:, :, 0, 0, 0]
+    except (KeyError, ValueError) as e:
+        print(f"  ⚠ could not read component histograms for validation ({e})")
+        return
+
+    # Albedo per incoming bin: integrate each component over outgoing solid
+    # angle, then average the colour channels.
+    def albedo(a):
+        return (a * sa[None, None, :, :, None]).sum(axis=(2, 3)).mean(-1)
+
+    a_t, a_r, a_m = albedo(rdm_t), albedo(rdm_r), albedo(rdm_m)
+    total = a_t + a_r + a_m
+
+    eta = bsdf.int_ior / bsdf.ext_ior
+    cos_i = np.cos(theta_i)
+    sin_t = np.sqrt(np.maximum(0.0, 1.0 - cos_i ** 2)) / eta
+    cos_t = np.sqrt(np.maximum(0.0, 1.0 - sin_t ** 2))
+    r_s = ((cos_i - eta * cos_t) / (cos_i + eta * cos_t)) ** 2
+    r_p = ((eta * cos_i - cos_t) / (eta * cos_i + cos_t)) ** 2
+    fresnel = 0.5 * (r_s + r_p)
+
+    share_r = (a_r / total).mean()
+    print(f"✓ Component split from rdm_t/rdm_r/rdm_m "
+          f"(T {a_t.mean():.3f}, R {a_r.mean():.3f}, M {a_m.mean():.3f}; "
+          f"total {total.mean():.4f})")
+    print(f"    direct-reflection share: measured {share_r:.4f} vs "
+          f"Fresnel {fresnel.mean():.4f} "
+          f"({100 * abs(share_r - fresnel.mean()) / max(share_r, 1e-9):.1f}% apart)")
+    if abs(total.mean() - 1.0) > 0.05:
+        print(f"    ⚠ components sum to {total.mean():.4f}, not ~1 -- the "
+              f"gather's normalisation or the T/R/M partition is off")
+
+
+def load_neural_bsdf_direct(checkpoint_dir, diamond_params, clamp_value=10.0,
+                            r_alpha=0.05, dispersion=True, explicit_entry=True,
+                            sparkle=False, sparkle_scale=0.02):
+    """Load neural BSDF with numerical stability."""
+    
+    # Build Model_M at whatever width/encoding it was trained with, if the
+    # checkpoint records it; older checkpoints predate the file and get the
+    # defaults, which are the historical 6-21-21-21-3 shape.
+    arch_path = os.path.join(checkpoint_dir, 'model_m_arch.json')
+    arch = {}
+    if os.path.exists(arch_path):
+        with open(arch_path) as f:
+            arch = json.load(f)
+        print(f"  Model_M architecture from checkpoint: {arch}")
+    model_m = Model_M(**arch).to(device)
+    model_m_path = os.path.join(checkpoint_dir, 'model_m.pth')
+    
+    if not os.path.exists(model_m_path):
+        print(f"  ⚠ Model_M not found at {model_m_path}")
+        return None
+    
+    try:
+        model_m.load_state_dict(
+            torch.load(model_m_path, map_location=device, weights_only=False)
+        )
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Model_M in {model_m_path} does not match the current "
+            f"architecture. Checkpoints trained before the Fourier encoding "
+            f"and width change (run_14 and earlier) have a 6-21-21-21-3 net "
+            f"and must be retrained with train_models.py; the weights cannot "
+            f"be converted. Original error: {e}"
+        ) from e
+    model_m.eval()
+    print("✓ Model_M weights loaded")
+    
+    # Test model and determine activation
+    test_wi = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+    test_wo = torch.tensor([[0.5, 0.5, 0.7071]], device=device)
+    test_input = torch.cat([test_wi, test_wo], dim=1)
+    
+    with torch.no_grad():
+        m_pred = model_m(test_input)
+        print(f"  Model_M test output: {m_pred.tolist()}")
+        
+        # Check for NaN
+        if torch.isnan(m_pred).any() or torch.isinf(m_pred).any():
+            print("  ⚠ Model_M output contains nan/inf; clamp will absorb it")
+
+    # Model_M's output nonlinearity is torch.exp (neural/base_model.py), but
+    # MiModelWrapper rebuilds the network from `sequential` alone -- the Linear
+    # and PReLU layers -- so the exp is not carried across and has to be
+    # supplied here. It has to MATCH: the network is trained so that exp(pre)
+    # equals the RDM target, and those targets have median ~0.06, which puts
+    # essentially every pre-activation below zero. Measured on run_15's
+    # weights: 99.9% of pre-activations negative, median -3.77.
+    #
+    # An earlier version applied a clamped ReLU here instead. That returned
+    # exactly zero for 99.9% of queries, so the neural lobe contributed 0.054%
+    # of the rendered energy and only bins whose target exceeded 1.0 survived
+    # -- scattered bright points on a black stone. Every neural render before
+    # this fix (diamond_test_10, _12, _22, _23) carries that defect.
+    #
+    # The inner minimum caps the exponent so a large activation cannot
+    # overflow to inf; the outer one is the caller's clamp_value.
+    activation = lambda x: dr.minimum(dr.exp(dr.minimum(x, 20.0)), clamp_value)
+    print(f"  ✓ Using exp activation, matching Model_M (clamped at {clamp_value})")
+
+    class WrapperWithSkip(MiModelWrapper):
+        def test(self, samples=42900):
+            pass
+    
+    # Build wrapper with stable activation
+    mlp_m = WrapperWithSkip(model_m, activation)
+    print("✓ DrJIT wrapper built for Model_M")
+    
+    props = mi.Properties()
+    props['int_ior'] = diamond_params['int_ior']
+    props['ext_ior'] = diamond_params['ext_ior']
+    props['type'] = 'neural_diamond'
+    props['r_alpha'] = r_alpha
+    props['dispersion'] = dispersion
+    props['explicit_entry'] = explicit_entry
+
+    bsdf = NeuralDiamond(props)
+    bsdf.model_m = mlp_m
+
+    # Load Model_T (transmittance fraction). Without this, eval_model_t()
+    # silently falls back to plain analytic Fresnel every time it's called.
+    model_t_path = os.path.join(checkpoint_dir, 'model_t.pth')
+    if os.path.exists(model_t_path):
+        model_t = Model_T().to(device)
+        try:
+            model_t.load_state_dict(
+                torch.load(model_t_path, map_location=device, weights_only=False)
+            )
+            model_t.eval()
+            mlp_t = WrapperWithSkip(model_t, lambda x: dr.clamp(x, 0.0, 1.0))
+            bsdf.model_t = mlp_t
+            print("✓ Model_T weights loaded")
+        except RuntimeError as e:
+            # Most common cause: the checkpoint was trained against a
+            # different Model_T architecture than the one currently defined
+            # in neural/base_model.py (e.g. a 3-channel output vs. today's
+            # 1-channel scalar transmittance) -- a shape mismatch, not a
+            # missing-file problem. Don't let it take down the whole render;
+            # fall back to analytic Fresnel and say exactly why.
+            print(f"  ⚠ Model_T checkpoint at {model_t_path} doesn't match "
+                  f"the current Model_T architecture ({e}). "
+                  f"Falling back to analytic Fresnel for R/T ratio -- "
+                  f"retrain Model_T or point checkpoint_name at a run "
+                  f"produced with the current architecture to fix this.")
+    else:
+        print(f"  ⚠ Model_T not found at {model_t_path} -- "
+              f"falling back to analytic Fresnel for R/T ratio")
+
+    # Build and attach the RDM alias sampler. Without this, sample_from_rdm()
+    # silently falls back to uniform-hemisphere direction sampling, which is
+    # a massive importance-sampling mismatch against Model_M's actual
+    # (peaked, facet-dependent) output distribution -- that mismatch is what
+    # was producing the per-facet noise in the renders.
+    rdm_sampler = build_rdm_sampler(checkpoint_dir)
+    bsdf.rdm_sampler = rdm_sampler
+
+    report_component_split(checkpoint_dir, bsdf)
+
+    if sparkle:
+        bsdf.sparkle = True
+        bsdf.sparkle_scale = sparkle_scale
+        attach_stochastic_detail(checkpoint_dir, bsdf)
+
+    # Add a clamp to the BSDF output
+    def safe_eval(bsdf, *args, **kwargs):
+        result = bsdf.__class__.eval(bsdf, *args, **kwargs)
+        # Clamp to prevent extreme values
+        return dr.clamp(result, 0.0, clamp_value)
+    
+    # Monkey patch eval for safety
+    bsdf.eval = safe_eval.__get__(bsdf, NeuralDiamond)
+    
+    print(f"✓ NeuralDiamond BSDF ready: {bsdf.to_string()}")
+    return bsdf
+
+
+def load_analytic_bsdf(diamond_params, dispersion=True):
+    """
+    Analytic dielectric for the ground-truth path.
+
+    Under a spectral variant this is the dispersive replacement, which is
+    what actually produces fire -- Mitsuba's stock `dielectric` takes one
+    scalar IOR and stays achromatic even in a spectral variant, so simply
+    switching variants changes nothing visible.
+    """
+    if IS_SPECTRAL and dispersion:
+        return {
+            'type': 'dispersive_dielectric',
+            'int_ior': diamond_params['int_ior'],
+            'ext_ior': diamond_params['ext_ior'],
+            'dispersion': True,
+        }
+    return {
+        'type': 'dielectric',
+        'int_ior': diamond_params['int_ior'],
+        'ext_ior': diamond_params['ext_ior'],
+    }
+
+
+def rotate_vertex(v, angle_x, angle_y, angle_z):
+    """Apply 3D rotation to a single vertex."""
+    x, y, z = v
+    
+    # Rotate around X axis
+    cos_a = math.cos(angle_x)
+    sin_a = math.sin(angle_x)
+    y1 = y * cos_a - z * sin_a
+    z1 = y * sin_a + z * cos_a
+    x1 = x
+    
+    # Rotate around Y axis
+    cos_b = math.cos(angle_y)
+    sin_b = math.sin(angle_y)
+    x2 = x1 * cos_b + z1 * sin_b
+    z2 = -x1 * sin_b + z1 * cos_b
+    y2 = y1
+    
+    # Rotate around Z axis
+    cos_c = math.cos(angle_z)
+    sin_c = math.sin(angle_z)
+    x3 = x2 * cos_c - y2 * sin_c
+    y3 = x2 * sin_c + y2 * cos_c
+    z3 = z2
+    
+    return np.array([x3, y3, z3], dtype=np.float32)
+
+
+def rotate_vertices(vertices, angles):
+    """Apply 3D rotation to all vertices."""
+    angle_x, angle_y, angle_z = angles
+    return np.array([rotate_vertex(v, angle_x, angle_y, angle_z) for v in vertices], dtype=np.float32)
+
+
+def create_rotated_ply(ply_path, vertices, normals, faces, frame_num, total_frames, rotation_speed=1.0):
+    """Create a rotated PLY file for a specific frame."""
+    
+    # Calculate rolling angles - smooth tumbling motion
+    t = frame_num / total_frames
+    
+    # Use smoother interpolation for the rolling motion
+    # This prevents sudden jumps that can cause rendering artifacts
+    angle_x = 2.0 * 2 * math.pi * t * rotation_speed
+    angle_y = 1.5 * 2 * math.pi * t * rotation_speed  
+    angle_z = 0.5 * 2 * math.pi * t * rotation_speed
+    
+    angles = (angle_x, angle_y, angle_z)
+    
+    # Rotate vertices and normals
+    rotated_verts = rotate_vertices(vertices, angles)
+    rotated_normals = rotate_vertices(normals, angles)
+    
+    # Write rotated PLY
+    tmp_path = ply_path.replace('.ply', f'_frame_{frame_num:04d}.ply')
+    write_ply(tmp_path, rotated_verts, rotated_normals, faces)
+    
+    return tmp_path, angles
+
+
+def create_scene(diamond_params, bsdf, width, height, frame_idx, total_frames, 
+                 ply_path, vertices, normals, faces, orbit_radius, rotation_speed,
+                 max_depth=64):
+    """Build scene with diamond rotating around Y axis (no flipping)."""
+    
+    t = frame_idx / total_frames
+    
+    # Rotation around Y axis only - full 360° rotation
+    angle = 2 * math.pi * t * rotation_speed
+    
+    # Rotate vertices around Y axis
+    rotated_verts = []
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    for v in vertices:
+        x, y, z = v
+        rx = x * cos_a + z * sin_a
+        ry = y  # Y stays the same
+        rz = -x * sin_a + z * cos_a
+        rotated_verts.append([rx, ry, rz])
+    rotated_verts = np.array(rotated_verts, dtype=np.float32)
+    
+    # Rotate normals the same way
+    rotated_normals = []
+    for n in normals:
+        nx, ny, nz = n
+        rnx = nx * cos_a + nz * sin_a
+        rny = ny  # Y stays the same
+        rnz = -nx * sin_a + nz * cos_a
+        rotated_normals.append([rnx, rny, rnz])
+    rotated_normals = np.array(rotated_normals, dtype=np.float32)
+    
+    # Write rotated PLY
+    rotated_ply_path = ply_path.replace('.ply', f'_frame_{frame_idx:04d}.ply')
+    write_ply(rotated_ply_path, rotated_verts, rotated_normals, faces)
+    
+    # Camera stays fixed (or orbits slowly)
+    cam_x = 0.0
+    cam_y = 1.8
+    cam_z = 4.0
+    
+    # Optional: slight camera orbit around diamond
+    # cam_angle = 0.3 * 2 * math.pi * t  # Slow orbit
+    # cam_x = orbit_radius * math.sin(cam_angle) * 0.3
+    # cam_z = orbit_radius * math.cos(cam_angle) * 0.3
+    
+    ground_bsdf = {
+        'type': 'diffuse',
+        'reflectance': {'type': 'rgb', 'value': [0.12, 0.12, 0.14]},
+    }
+
+    scene_dict = {
+        'type': 'scene',
+
+        'integrator': {
+            'type': 'path',
+            # A diamond total-internally-reflects a lot, and a path that hits
+            # the cap contributes exactly 0 -- it reads as an unshaded black
+            # patch. Measured share of the stone below the black point on
+            # round_diamond_gia: 33.1% at depth 24, 30.2% at 64, 30.0% at 128.
+            # Converged by 64; the rest of the black is a lighting problem,
+            # not a truncation one (see utils/studio_env.AMBIENT_RADIANCE).
+            'max_depth': max_depth,
+        },
+
+        'sensor': {
+            'type': 'perspective',
+            'fov': 30,
+            'to_world': sT.look_at(
+                origin=[cam_x, cam_y, cam_z],
+                target=[0.0, 0.0, 0.0],
+                up=[0.0, 1.0, 0.0],
+            ),
+            'film': {
+                'type': 'hdrfilm',
+                'width': width,
+                'height': height,
+                'pixel_format': 'rgb',
+                'rfilter': {'type': 'gaussian'},
+            },
+            'sampler': {
+                'type': 'independent',
+                'sample_count': 256,
+            },
+        },
+
+        # Lighting comes from utils/studio_env.py. It must not be a single
+        # constant environment: every path that escapes the stone would then
+        # return the same radiance whatever route it took, so the facets
+        # render as flat unshaded grey and dispersion cannot show colour.
+        **studio_lighting(),
+
+        'ground': {
+            'type': 'rectangle',
+            'to_world': sT.translate([0, 0, -0.9]).scale([8, 8, 1]),
+            'bsdf': ground_bsdf,
+        },
+
+        'diamond': {
+            'type': 'ply',
+            'filename': rotated_ply_path,
+            'bsdf': bsdf,
+        },
+    }
+
+    scene = mi.load_dict(scene_dict)
+
+    # Clean up temporary PLY file (after scene is built)
+    try:
+        os.unlink(rotated_ply_path)
+    except OSError:
+        pass
+
+    return scene
+
+
+def tonemap(image, exposure=1.0):
+    img = np.array(image) * exposure
+    img = np.clip(img, 0.0, 1.0)
+    img = np.power(img, 1.0 / 2.2)
+    return (img * 255).astype(np.uint8)
+
+
+def _render_accumulated(scene, spp, seed_base):
+    """
+    Render one region with the existing sample-batching, returning the mean.
+
+    Split out of render_frame so the tiled path can reuse it per tile without
+    duplicating the NaN guard or the sample-weighted accumulation.
+    """
+    image = None
+    batch_size = min(8, spp)
+    for i in range(0, spp, batch_size):
+        batch_spp = min(batch_size, spp - i)
+        img = mi.render(scene, spp=batch_spp, seed=seed_base + i)
+
+        img_np = np.array(img)
+        if np.isnan(img_np).any() or np.isinf(img_np).any():
+            print(f"    ⚠ NaN/Inf in render, replacing with zeros")
+            img_np = np.nan_to_num(img_np, nan=0.0, posinf=0.0, neginf=0.0)
+            img = mi.TensorXf(img_np)
+
+        # `mi.render` already returns the *mean* over its own samples, so the
+        # batches combine as a sample-weighted mean. See the note in
+        # render_frame about what summing the means instead did.
+        contribution = img * batch_spp
+        image = contribution if image is None else image + contribution
+        dr.flush_malloc_cache()
+    return image / spp
+
+
+def render_frame_tiled(scene, spp, frame_idx, total_frames, tile):
+    """
+    Render a frame in `tile` x `tile` crops and paste them together.
+
+    Why this exists: Mitsuba's wavefront mode keeps every pixel and sample in
+    flight at once, and neural/drjit_wrapper.py's matmul materialises an
+    intermediate of shape out x in x lanes, where
+
+        lanes = width * height * spp_in_this_call
+
+    So memory is linear in lanes, and at 512x512 with an spp batch of 8 that is
+    2,097,152 lanes -- about 2.4 GB for the render-safe 21x6 network but ~84 GB
+    for the 128x78 one that an offline sweep showed is the only configuration
+    able to represent the RDM (hue correlation +0.900 against +0.085). Sample
+    batching alone cannot get there: it bottoms out at spp=1, still 262,144
+    lanes. The only remaining axis is spatial.
+
+    A 128x128 tile at spp 1 is 16,384 lanes, roughly 650 MB for that network.
+
+    This changes memory, not the estimator: pixels in a path tracer are
+    independent, so splitting them across calls is exact. The one thing that
+    must be right is seeding -- each tile needs its own seed stream, or every
+    tile renders the identical noise pattern and the frame comes out visibly
+    tiled.
+
+    Tiling makes the network *fit*, not run *fast*: each mi.render() call
+    carries launch and compilation overhead, so prefer the largest tile that
+    stays inside memory.
+    """
+    sensor = scene.sensors()[0]
+    film = sensor.film()
+    W, H = film.size()
+    params = mi.traverse(sensor)
+
+    # The film's reconstruction filter spreads each sample over a neighbourhood
+    # of pixels. Inside a crop, samples that would have landed just outside it
+    # are never generated, so the crop's edge pixels receive less filter support
+    # than they would in a full render -- which shows up as a step at every tile
+    # boundary. Measured on a first version of this function: the mean absolute
+    # difference across seam columns was 2.7x the interior value.
+    #
+    # The fix is to render each tile expanded by the filter's border and keep
+    # only the interior, so every pixel that survives had its full footprint
+    # sampled. Pixels lost to the expansion at the image edge are fine: there
+    # is genuinely nothing beyond them in a full render either.
+    try:
+        border = int(film.rfilter().border_size())
+    except Exception:
+        border = 2
+    full = np.zeros((H, W, 3), dtype=np.float32)
+    n_tiles = ((W + tile - 1) // tile) * ((H + tile - 1) // tile)
+    print(f"  Rendering frame {frame_idx+1}/{total_frames} in {n_tiles} "
+          f"tiles of {tile}x{tile} (+{border}px filter border)...")
+
+    t = 0
+    try:
+        for y0 in range(0, H, tile):
+            for x0 in range(0, W, tile):
+                tw, th = min(tile, W - x0), min(tile, H - y0)
+                xe0, ye0 = max(0, x0 - border), max(0, y0 - border)
+                xe1, ye1 = min(W, x0 + tw + border), min(H, y0 + th + border)
+
+                params['film.crop_offset'] = [xe0, ye0]
+                params['film.crop_size'] = [xe1 - xe0, ye1 - ye0]
+                params.update()
+
+                # Distinct seed stream per (frame, tile); the inner batches add
+                # their own offset inside _render_accumulated.
+                img = np.array(_render_accumulated(
+                    scene, spp, seed_base=frame_idx * 1000003 + t * 1009))
+                ox, oy = x0 - xe0, y0 - ye0
+                full[y0:y0 + th, x0:x0 + tw] = img[oy:oy + th, ox:ox + tw]
+                t += 1
+    finally:
+        # Always restore the full window, even if a tile raised: leaving the
+        # film cropped would silently shrink every later frame.
+        params['film.crop_offset'] = [0, 0]
+        params['film.crop_size'] = [W, H]
+        params.update()
+
+    return mi.TensorXf(full)
+
+
+def render_frame(scene, spp, frame_idx, total_frames, tile=0):
+    """Render a single frame with error handling."""
+    if tile and tile > 0:
+        return render_frame_tiled(scene, spp, frame_idx, total_frames, tile)
+
+    print(f"  Rendering frame {frame_idx+1}/{total_frames}...")
+
+    try:
+        # Progressive rendering with batches
+        image = None
+        batch_size = min(8, spp)
+
+        for i in range(0, spp, batch_size):
+            batch_spp = min(batch_size, spp - i)
+            img = mi.render(scene, spp=batch_spp, seed=i + frame_idx * 10000)
+            
+            # Check for NaN in rendered image
+            img_np = np.array(img)
+            if np.isnan(img_np).any() or np.isinf(img_np).any():
+                print(f"    ⚠ Warning: NaN/Inf detected in frame {frame_idx+1}, replacing with zeros")
+                img_np = np.nan_to_num(img_np, nan=0.0, posinf=0.0, neginf=0.0)
+                img = mi.TensorXf(img_np)
+            
+            # `mi.render` already returns the *mean* over its own samples, so
+            # the batches must be combined as a sample-weighted mean. Summing
+            # the batch means and then dividing by the total sample count
+            # divided every frame by an extra factor of `batch_size` (8x at the
+            # default spp), which is what made the stone render as flat black
+            # with a few blown-out facets and no midtones in between.
+            contribution = img * batch_spp
+            image = contribution if image is None else image + contribution
+            dr.flush_malloc_cache()
+        
+        image /= spp
+        return image
+        
+    except Exception as e:
+        # `args` is not in scope here, so referencing it turned every render
+        # failure into a NameError that hid the real cause. Take the frame
+        # size from the sensor instead.
+        print(f"    ⚠ Error rendering frame {frame_idx+1}: {e}")
+        w, h = scene.sensors()[0].film().crop_size()
+        return mi.TensorXf(np.zeros((h, w, 3), dtype=np.float32))
+
+
+def create_animation_frames(args, bsdf, diamond_params, vertices, normals, faces):
+    """Render all animation frames."""
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    frames_dir = output_dir / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    
+    # Create base PLY path
+    ply_path = os.path.join(tempfile.gettempdir(), 'diamond_base.ply')
+    write_ply(ply_path, vertices, normals, faces)
+    
+    print(f"\n🎬 Rendering {args.frames} rotation animation frames...")
+    print(f"   SPP: {args.spp}")
+    print(f"   Resolution: {args.width}×{args.height}")
+    print(f"   Rotation speed: {args.rotation_speed}x")
+    print(f"   Output: {output_dir}")
+    print(f"   Camera: fixed at [0, 1.8, 4.0]")
+    
+    frames = []
+    failed_frames = []
+    
+    for frame_idx in range(args.frames):
+        # Build scene for this frame
+        try:
+            scene = create_scene(
+                diamond_params,
+                bsdf,
+                args.width,
+                args.height,
+                frame_idx,
+                args.frames,
+                ply_path,
+                vertices,
+                normals,
+                faces,
+                args.orbit_radius,
+                args.rotation_speed,
+                args.max_depth,
+            )
+        except Exception as e:
+            print(f"  ⚠ Error building scene for frame {frame_idx+1}: {e}")
+            failed_frames.append(frame_idx)
+            continue
+        
+        # Render frame
+        image = render_frame(scene, args.spp, frame_idx, args.frames, args.tile)
+        
+        # Save tonemapped PNG
+        tonemapped = tonemap(np.array(image), args.exposure)
+        frame_path = frames_dir / f"frame_{frame_idx:04d}.png"
+        from PIL import Image
+        Image.fromarray(tonemapped, 'RGB').save(frame_path)
+        frames.append(frame_path)
+        
+        # Save HDR for quality
+        hdr_path = frames_dir / f"frame_{frame_idx:04d}.exr"
+        mi.util.write_bitmap(str(hdr_path), image)
+        
+        # Clean up
+        dr.flush_malloc_cache()
+    
+    # Clean up base PLY
+    try:
+        os.unlink(ply_path)
+    except OSError:
+        pass
+    
+    if failed_frames:
+        print(f"\n⚠ Warning: {len(failed_frames)} frames failed: {failed_frames}")
+    
+    print(f"\n✅ {len(frames)} frames rendered successfully!")
+    return frames
+
+
+def create_video(frames, output_dir, fps=30):
+    """Create MP4 video and GIF from rendered frames."""
+    try:
+        import subprocess
+        
+        output_dir = Path(output_dir)
+        video_path = output_dir / "diamond_rolling.mp4"
+        
+        # Check if frames exist
+        frame_pattern = output_dir / 'frames' / 'frame_*.png'
+        if not list(output_dir.glob('frames/frame_*.png')):
+            print("  ⚠ No frames found, skipping video creation")
+            return
+        
+        # Create MP4 with smooth playback
+        cmd = [
+            'ffmpeg', '-y',
+            '-framerate', str(fps),
+            '-pattern_type', 'glob',
+            '-i', str(output_dir / 'frames' / 'frame_*.png'),
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-crf', '18',
+            '-preset', 'medium',
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+            str(video_path)
+        ]
+        
+        print(f"\n🎬 Creating video: {video_path}")
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"✅ Video created: {video_path}")
+        
+        # Create GIF
+        gif_path = output_dir / "diamond_rolling.gif"
+        cmd_gif = [
+            'ffmpeg', '-y',
+            '-framerate', str(min(fps, 15)),
+            '-pattern_type', 'glob',
+            '-i', str(output_dir / 'frames' / 'frame_*.png'),
+            '-vf', 'scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            '-loop', '0',
+            str(gif_path)
+        ]
+        
+        try:
+            subprocess.run(cmd_gif, check=True, capture_output=True)
+            print(f"✅ GIF created: {gif_path}")
+        except Exception as e:
+            print(f"  ⚠ Could not create GIF: {e}")
+            
+    except FileNotFoundError:
+        print("  ⚠ ffmpeg not found - skipping video creation")
+        print("  Install ffmpeg: sudo apt install ffmpeg")
+
+
+def main():
+    args = parse_args()
+    if args.exposure is None:
+        args.exposure = display_exposure()
+
+    checkpoint_dir = os.path.join('checkpoints', args.checkpoint_name)
+    if not os.path.exists(checkpoint_dir):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_dir}")
+    print(f"✓ Checkpoint: {checkpoint_dir}")
+    print(f"✓ Variant: {variant}")
+
+    # Load preset
+    preset_path = os.path.join(checkpoint_dir, 'diamond_preset.json')
+    if os.path.exists(preset_path):
+        with open(preset_path) as f:
+            diamond_params = json.load(f)
+        print("✓ Parameters: from checkpoint JSON")
+    else:
+        diamond_params = DIAMOND_PRESETS.get(args.diamond_name)
+        if diamond_params is None:
+            raise ValueError(f"Unknown preset: {args.diamond_name}")
+        diamond_params = diamond_params.copy()
+        print(f"✓ Parameters: preset '{args.diamond_name}'")
+
+    # Build diamond mesh and get vertices/normals/faces
+    ply_path, vertices, normals, faces = build_diamond_mesh(diamond_params)
+    
+    # Build BSDF
+    dispersion = IS_SPECTRAL and not args.no_dispersion
+    print(f"✓ Variant: {variant}"
+          f"{' (spectral)' if IS_SPECTRAL else ' (RGB -- fire is not representable)'}")
+    print(f"✓ Dispersion: {'on' if dispersion else 'off'}")
+
+    if args.no_neural:
+        print("✓ Mode: analytic ground truth (--no_neural)")
+        bsdf = load_analytic_bsdf(diamond_params, dispersion)
+    else:
+        print("✓ Mode: neural shading (Model_M + DiamondFacet)")
+        bsdf = load_neural_bsdf_direct(checkpoint_dir, diamond_params,
+                                       args.clamp_value, args.r_alpha, dispersion,
+                                       not args.no_explicit_entry,
+                                       args.sparkle, args.sparkle_scale)
+        if bsdf is None:
+            print("⚠ Neural BSDF failed to load - falling back to dielectric")
+            bsdf = load_analytic_bsdf(diamond_params, dispersion)
+
+    # Disable megakernel
+    for flag in [dr.JitFlag.LoopRecord, dr.JitFlag.VCallRecord, dr.JitFlag.VCallOptimize]:
+        dr.set_flag(flag, False)
+    print("✓ Megakernel disabled")
+
+    # Render animation
+    frames = create_animation_frames(args, bsdf, diamond_params, vertices, normals, faces)
+
+    # Create video. Skipped for a single frame: ffmpeg's glob pattern needs at
+    # least two images and exits non-zero otherwise, which used to abort the
+    # run *after* the frame had already been written -- the render had
+    # succeeded but the process still failed. A one-frame "flash" render is a
+    # normal way to use this script, so it must not end in a traceback.
+    if len(frames) > 1:
+        create_video(frames, Path(args.output_dir), fps=args.fps)
+    else:
+        print("\n   Single frame -- skipping video encode.")
+
+    print(f"\n✅ Rolling animation complete!")
+    print(f"   Frames: {Path(args.output_dir) / 'frames'}")
+    print(f"   Video: {args.output_dir}/diamond_rolling.mp4")
+    if os.path.exists(Path(args.output_dir) / "diamond_rolling.gif"):
+        print(f"   GIF: {args.output_dir}/diamond_rolling.gif")
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
