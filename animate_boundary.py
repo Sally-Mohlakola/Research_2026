@@ -55,8 +55,10 @@ def encode(sequence, output, fps):
                     str(video)], check=True, capture_output=True)
     written.append(video)
     animated = output/'rotation.gif'
+    # Never upscale: enlarging a noisy frame magnifies the grain without adding
+    # information, which reads as a far worse render than the source actually is.
     subprocess.run(['ffmpeg', '-y', '-framerate', str(min(fps, 15)), '-i', pattern,
-                    '-vf', 'scale=480:-1:flags=lanczos,split[a][b];'
+                    '-vf', "scale='min(480,iw)':-1:flags=lanczos,split[a][b];"
                            '[a]palettegen[p];[b][p]paletteuse',
                     str(animated)], check=True, capture_output=True)
     written.append(animated)

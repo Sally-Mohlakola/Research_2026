@@ -39,11 +39,12 @@ def run(command, log):
 
 
 def render_task(job):
-    directory, model, mode, azimuth, seed, width, height, spp, scene_depth, logs, split = job
+    (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
+     logs, split, rfilter) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
-               '--scene_depth', scene_depth]
+               '--scene_depth', scene_depth, '--rfilter', rfilter]
     if split:
         command.append('--split_components')
     run(command, logs/('render_%s_s%s.log' % (mode, seed)))
@@ -70,6 +71,10 @@ def main():
                              'nothing else heavy is running.')
     parser.add_argument('--modes', nargs='+', choices=MODES, default=list(MODES))
     parser.add_argument('--flash_multiple', type=float, default=32.)
+    parser.add_argument('--rfilter', choices=['box','gaussian','tent'], default='box',
+                        help='Film reconstruction filter, applied to both modes so the '
+                             'comparison stays paired. Gaussian looks cleaner but '
+                             'correlates neighbouring pixels.')
     parser.add_argument('--split_components', action='store_true',
                         help='Split each frame by whether the path went through the '
                              'stone interior, and report the learned component in '
@@ -97,7 +102,7 @@ def main():
             directories[mode].append(directory)
             jobs.append((directory, args.model, mode, args.azimuth, seed,
                          args.width, args.height, args.spp, args.scene_depth, logs,
-                         args.split_components))
+                         args.split_components, args.rfilter))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -112,9 +117,10 @@ def main():
             print('  [%d/%d] %s seed %d' % (completed, len(jobs), mode, seed), flush=True)
     render_seconds = time.perf_counter()-begin
 
-    merged = {}
+    merged, results = {}, {}
     for mode in args.modes:
         output = args.output_dir/('%s_az%03.0f' % (mode, args.azimuth))
+        results[mode] = output.with_suffix('.png')
         print('merging %s' % mode, flush=True)
         run(['merge_renders.py', '--input_dir', args.output_dir/mode,
              '--output', output], logs/('merge_%s.log' % mode))
@@ -123,8 +129,12 @@ def main():
     summary = dict(model=str(args.model), azimuth=args.azimuth,
                    width=args.width, height=args.height, spp_each=args.spp,
                    seeds=args.seeds, effective_spp=effective,
-                   modes=args.modes, workers=args.workers,
-                   render_seconds=render_seconds, merged=merged)
+                   modes=args.modes, workers=args.workers, rfilter=args.rfilter,
+                   render_seconds=render_seconds, merged=merged,
+                   result_images={m: str(p) for m, p in results.items()},
+                   note='Per-seed renders under <mode>/s<seed>/ are ingredients at '
+                        '--spp each, not results. The finished images are '
+                        'result_images, at the top level, at the full effective spp.')
 
     if not args.skip_evaluation:
         evaluation = args.output_dir/'evaluation.json'
@@ -138,9 +148,13 @@ def main():
 
     (args.output_dir/'paired.json').write_text(json.dumps(summary, indent=2),
                                                encoding='utf-8')
-    print('\nrendered in %.0f s -> %s' % (render_seconds, args.output_dir))
+    print('\nrendered in %.0f s' % render_seconds)
+    print('\nFINISHED IMAGES (%d effective spp):' % effective)
     for mode in args.modes:
-        print('  %-8s mean luminance %.6g' % (mode, merged[mode]['mean_luminance']))
+        print('  %-8s %s' % (mode, results[mode]))
+        print('  %-8s mean luminance %.6g' % ('', merged[mode]['mean_luminance']))
+    print('\nThe per-seed renders under <mode>/s<seed>/ are ingredients at %d spp '
+          'each,\nnot results. Use the files listed above.' % args.spp)
 
 
 if __name__ == '__main__':

@@ -22,7 +22,7 @@ from bsdf.dispersion import diamond_ior
 from utils.studio_env import studio_lighting, display_exposure
 
 
-def make_scene(checkpoint, width, height, azimuth=0., ambient=None):
+def make_scene(checkpoint, width, height, azimuth=0., ambient=None, rfilter='box'):
     vertices = checkpoint['vertices'].numpy()
     faces = checkpoint['faces'].numpy().astype(np.uint32)
     mesh = mi.Mesh('boundary_diamond', len(vertices), len(faces))
@@ -35,7 +35,7 @@ def make_scene(checkpoint, width, height, azimuth=0., ambient=None):
         sensor=dict(type='perspective', fov=30,
                     to_world=mi.ScalarTransform4f.look_at(origin=camera, target=[0,0,0], up=[0,1,0]),
                     film=dict(type='hdrfilm', width=width, height=height, pixel_format='rgb',
-                              rfilter=dict(type='box')),
+                              rfilter=dict(type=rfilter)),
                     sampler=dict(type='independent', sample_count=1)),
         ground=dict(type='rectangle', to_world=mi.ScalarTransform4f.translate([0,0,-.9]).scale([8,8,1]),
                     bsdf=dict(type='diffuse', reflectance=dict(type='rgb', value=[.12,.12,.14]))),
@@ -70,7 +70,8 @@ def analytic_exit(first, stone, eta, max_depth, rng):
 
 
 def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
-           mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25):
+           mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25,
+           stratify_wavelength=False):
     rng = np.random.default_rng(seed)
     generator = torch.Generator().manual_seed(seed)
     metadata = checkpoint['metadata']
@@ -88,7 +89,15 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
         for sample_id in range(start, min(start+batch_size, total)):
             pixel = sample_id//spp
             x, y = pixel % width, pixel//width
-            ray, sensor_weight = sensor.sample_ray(0., float(rng.random()),
+            # One hero wavelength per sample means each sample lands as a
+            # saturated colour. Drawing it independently lets a pixel's spp
+            # samples clump in the spectrum; stratifying spreads them evenly
+            # over [0,1) at no cost and without bias.
+            if stratify_wavelength:
+                wavelength_sample = ((sample_id % spp) + rng.random())/spp
+            else:
+                wavelength_sample = float(rng.random())
+            ray, sensor_weight = sensor.sample_ray(0., wavelength_sample,
                 mi.Point2f((x+rng.random())/width, (y+rng.random())/height), mi.Point2f(.5))
             # Trace one hero wavelength. Sensor weights retain its wavelength PDF.
             beta = sensor_weight * mi.Spectrum([4.,0.,0.,0.])
@@ -196,6 +205,17 @@ def main():
     parser.add_argument('--scene_depth', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--stratify_wavelength', action='store_true',
+                        help='Stratify the hero wavelength across a pixel samples '
+                             'instead of drawing it independently. Unbiased, free, '
+                             'and reduces chromatic speckle. Off by default so that '
+                             'existing noise measurements stay comparable.')
+    parser.add_argument('--rfilter', choices=['box','gaussian','tent'], default='box',
+                        help='Film reconstruction filter. Box is the default so that '
+                             'existing measurements stay comparable; gaussian spreads '
+                             'each sample over neighbouring pixels and looks markedly '
+                             'cleaner, but correlates adjacent pixels, so do not mix '
+                             'filters within one comparison.')
     parser.add_argument('--rdm_prior', type=Path)
     parser.add_argument('--prior_fraction', type=float, default=.25)
     parser.add_argument('--split_components', action='store_true',
@@ -219,7 +239,8 @@ def main():
     v, f = checkpoint['vertices'].numpy(), checkpoint['faces'].numpy().astype(np.uint32)
     if hashlib.sha256(v.tobytes()+f.tobytes()).hexdigest() != m['geometry_sha256']:
         raise ValueError('Checkpoint geometry hash mismatch')
-    scene, stone, mesh = make_scene(checkpoint,args.width,args.height,args.azimuth)
+    scene, stone, mesh = make_scene(checkpoint,args.width,args.height,args.azimuth,
+                                    rfilter=args.rfilter)
     prior = None
     if args.rdm_prior is not None:
         from neural.boundary_prior import BoundaryPrior
@@ -230,7 +251,8 @@ def main():
             prior = BoundaryPrior(archive['pmf'], info['theta_bins'], info['phi_bins'], model)
     begin = time.perf_counter()
     image, stats, components = render(scene,stone,mesh,model,checkpoint,args.width,args.height,args.spp,args.seed,
-                          args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction)
+                          args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction,
+                          args.stratify_wavelength)
     if not np.isfinite(image).all():
         raise RuntimeError('Nonfinite render')
     frames = args.output_dir/'frames'
@@ -244,7 +266,9 @@ def main():
     report = dict(rdm_prior=str(args.rdm_prior) if prior is not None else None,
                   prior_fraction=args.prior_fraction if prior is not None else 0.,mode=args.mode, model=str(args.model), width=args.width,height=args.height,
                   spp=args.spp,seed=args.seed,scene_depth=args.scene_depth,batch_size=args.batch_size,
-                  azimuth=args.azimuth,internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
+                  azimuth=args.azimuth,rfilter=args.rfilter,
+                  stratify_wavelength=args.stratify_wavelength,
+                  internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
                   stats=stats,geometry_sha256=m['geometry_sha256'],
                   checkpoint_sha256=hashlib.sha256(args.model.read_bytes()).hexdigest(),
                   exposure=display_exposure(),limitations=['Experimental learned transport; RDM proposal preserves the learned target, not physical ground truth.',
