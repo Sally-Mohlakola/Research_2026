@@ -51,9 +51,16 @@ it exhausted distinct entry states.
 
 ### The model is not capacity limited
 
-Width 256 with 8 components reaches validation joint NLL 6.1701 at epoch 40 and
-regresses to 6.2437 by epoch 60. Roughly 0.40 nats over width 64, then
-overfitting.
+Width 256 with 8 components reaches validation joint NLL 6.1501 at epoch 51 and
+regresses to 6.3482 by epoch 80, a drift of 0.198 nats past its minimum. That is
+0.33 nats better than width 64, followed by clear overfitting at 4.8 training
+records per parameter against 44.6 for width 64.
+
+This comparison carries a caveat. Width 64 reached its best epoch at 78 of 80 and
+its validation curve was still falling, so it was still *under*-trained when
+compared against a width-256 model that had already turned. The honest statement
+is that width 64 is under-trained, width 256 overfits, and the capacity between
+18,789 and 175,881 parameters is unexplored.
 
 ### The model genuinely learned
 
@@ -66,6 +73,71 @@ Held-out test set, original pilot to converged model:
 | predicted escape rate | 0.955 | 0.9975 (measured 0.9970) |
 
 Unconditional top-1 baseline is 0.030.
+
+### The operator is translucent where the transport is transparent
+
+Measured directly on the operator, with no rendering, lighting or exposure
+involved. For 300 held-out entry states, the angular spread of exit directions
+about their mean, computed within each individual exit facet:
+
+| | median spread | branches under 2 degrees |
+| --- | --- | --- |
+| real transport | **0.00 degrees** | 99.3 percent (n=547) |
+| neural model | **25.98 degrees** | 0.3 percent (n=2,125) |
+
+Real transport splits an entry into a median of two discrete beams (mean 2.43
+distinct exit facets across 16 repeats; only 5.5 percent of entry states use a
+single facet), and **each beam is perfectly coherent**, exactly as delta
+refraction requires. Measuring spread across all beams together gives 19.78
+degrees for real transport against 44.17 for the model, but that total is
+branching, not blur. The within-branch figure isolates blur, and there the real
+value is zero.
+
+This is the difference between window glass and frosted glass: the same light is
+transmitted, the direction information is destroyed. The learned operator is
+translucent; the transport it replaces is transparent.
+
+The architecture is not hard-limited here. `log_std` is clamped at -4, permitting
+roughly one degree of spread. The model learned 26 degrees instead, because four
+Gaussian components must cover a branch structure they cannot otherwise
+represent. The width is not a tuning failure; it is what a smooth density does
+when asked to be a sum of deltas.
+
+### Dispersion is learned and then destroyed
+
+Diamond's index runs 2.4641 at 400 nm to 2.4062 at 700 nm. Querying a fixed entry
+state across that range shifts the model's mean exit direction by a median of
+**6.91 degrees**, so the model did learn a wavelength dependence.
+
+That signal is **3.8 times smaller than the model's own 25.98 degree blur**. Every
+wavelength's cone overlaps every other wavelength's cone almost entirely, so at
+any image point all wavelengths arrive together and recombine to grey. From
+`utils/studio_env.py`:
+
+> dispersion spreads a path's wavelengths across a small angular fan, so the
+> colours only separate visibly when that fan straddles an edge between a bright
+> source and a dark surround
+
+A 26 degree cone does not straddle edges; it averages over many at once.
+
+The information is therefore present in the model and discarded by the
+representation, which is a stronger statement than a failure to learn dispersion.
+
+### One defect accounts for the whole appearance
+
+Every optical signature distinguishing a diamond from ordinary glass requires
+angular coherence finer than the measured blur:
+
+| effect | requirement | measured |
+| --- | --- | --- |
+| fire | wavelengths resolved into different places | 6.91 degree separation inside 25.98 degree blur |
+| brilliance | concentrated white return | peak over mean 23.5 against 139.7 |
+| scintillation | sharp flashes under motion | contrast 0.799 against 3.806 |
+
+A brilliant cut is an engineering design that presupposes coherent transport.
+Supplied with an operator that blurs by 26 degrees, the cut stops functioning and
+the facets become decorative geometry rather than optical elements. The rendered
+stone reads as frosted glass: transmitting, but not transparent.
 
 ### The image did not follow
 
@@ -248,6 +320,7 @@ determines where light lands.
 | data ladder | `checkpoints/boundary_scale_v1/ladder_summary.json` |
 | converged model | `checkpoints/boundary_scale_v1/final_w064c4/` |
 | paired render comparison | `renders/flash_128spp/evaluation.json` |
+| operator blur, dispersion | measured on `checkpoints/camera_pool/test.npz` with `checkpoints/camera_model` |
 | signal/noise partition | `renders/flash_128spp/{analytic,neural}/s*/frames/` |
 | component split | same, `components` block |
 | scintillation sweep | `renders/flash_scaled_01/flash_sweep.json` |

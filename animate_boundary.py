@@ -32,13 +32,22 @@ def run(command, log):
         raise RuntimeError('Frame failed; see %s\n%s' % (log, (done.stderr or '')[-2000:]))
 
 
+def tumble_angles(index, frames, speed=1.0):
+    """eval.py's tumbling motion: 2, 1.5 and 0.5 turns about X, Y and Z."""
+    t = index/frames
+    return (360.*2.0*t*speed, 360.*1.5*t*speed, 360.*0.5*t*speed)
+
+
 def render_frame(job):
-    index, azimuth, directory, model, mode, seed, width, height, spp, scene_depth, logs = job
-    run(['render_boundary.py', '--model', model, '--output_dir', directory,
-         '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
-         '--width', width, '--height', height, '--spp', spp,
-         '--scene_depth', scene_depth],
-        logs/('frame_%04d.log' % index))
+    (index, azimuth, directory, model, mode, seed, width, height, spp,
+     scene_depth, logs, rotation) = job
+    command = ['render_boundary.py', '--model', model, '--output_dir', directory,
+               '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
+               '--width', width, '--height', height, '--spp', spp,
+               '--scene_depth', scene_depth]
+    if rotation is not None:
+        command += ['--rotation_deg'] + ['%g' % v for v in rotation]
+    run(command, logs/('frame_%04d.log' % index))
     return index, azimuth
 
 
@@ -87,6 +96,12 @@ def main():
                              'shared seed keeps the noise pattern stable between '
                              'frames so the eye reads facet motion rather than '
                              'flicker.')
+    parser.add_argument('--motion', choices=['orbit', 'tumble'], default='orbit',
+                        help='orbit moves the camera around a fixed stone. tumble '
+                             'rotates the stone with camera and lights fixed, which '
+                             'is what eval.py does and what shows scintillation.')
+    parser.add_argument('--rotation_speed', type=float, default=1.0,
+                        help='Turns multiplier for --motion tumble.')
     parser.add_argument('--fps', type=int, default=30)
     parser.add_argument('--workers', type=int, default=4,
                         help='Concurrent frame renders, about 250 MB each.')
@@ -104,10 +119,14 @@ def main():
     jobs = []
     for index in range(args.frames):
         azimuth = args.azimuth_start + index*step
-        jobs.append((index, azimuth, args.output_dir/'raw'/('f%04d' % index),
+        rotation = (tumble_angles(index, args.frames, args.rotation_speed)
+                    if args.motion == 'tumble' else None)
+        jobs.append((index, azimuth if args.motion == 'orbit' else args.azimuth_start,
+                     args.output_dir/'raw'/('f%04d' % index),
                      args.model, args.mode,
                      args.seed + (index if args.vary_seed else 0),
-                     args.width, args.height, args.spp, args.scene_depth, logs))
+                     args.width, args.height, args.spp, args.scene_depth, logs,
+                     rotation))
 
     print('%d frames, %s, %gx%g degrees at %g deg/frame, %dx%d at %d spp, %d workers'
           % (args.frames, args.mode, args.azimuth_start,
@@ -137,6 +156,7 @@ def main():
         azimuth_start=args.azimuth_start, azimuth_sweep=args.azimuth_sweep,
         degrees_per_frame=step, width=args.width, height=args.height,
         spp=args.spp, seed=args.seed, vary_seed=args.vary_seed, fps=args.fps,
+        motion=args.motion, rotation_speed=args.rotation_speed,
         render_seconds=seconds, outputs=[str(p) for p in written]),
         indent=2), encoding='utf-8')
 

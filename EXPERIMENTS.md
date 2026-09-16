@@ -18,6 +18,75 @@ is assertable but not defended.
 
 ---
 
+## 0. Train-test-render distribution mismatch — HIGHEST PRIORITY, may overturn the claim
+
+Training samples entry directions **uniformly over the sphere**. A render queries
+only the narrow cone its camera sees. Measured against the camera axis at azimuth
+0 with a 30 degree field of view:
+
+| within N degrees of the camera axis | share of the 65,536 entry states | effective states |
+| --- | --- | --- |
+| 10 | 1.13 percent | 740 |
+| 15 (the field of view) | 2.48 percent | 1,626 |
+| 30 | 9.27 percent | 6,072 |
+
+So in the region the renderer actually queries, effective training density
+corresponds to roughly **1,600 entry states, not 65,536**. Compare the ladder:
+
+| entry states | gain over baseline | top-1 |
+| --- | --- | --- |
+| 1,024 | 0.20 nats | 0.108 |
+| 4,096 | 0.51 nats | 0.207 |
+| 65,536 | 1.06 nats | 0.347 |
+
+**The render operates in the 1,024 to 4,096 regime, where the model is known to be
+weak — not the 65,536 regime whose numbers are quoted throughout.**
+
+This is subtle because the held-out test set is drawn from the *same* uniform
+sphere distribution as training, so test joint NLL 6.605 looks excellent while
+never probing the slice the camera uses. Strong held-out numbers together with a
+failed render are exactly the signature of this mismatch.
+
+The conclusion "not data limited" is therefore established **only for uniform
+sphere queries**. It is not established for camera-cone queries.
+
+### The experiment
+
+`gather_boundary.py --entry_sampling camera` now draws entry states from the
+render query distribution (verified: 100 percent of sampled entries fall within
+15 degrees of the camera axis, median 9.1 degrees, against 3.8 percent and 93.3
+degrees for uniform sampling). Gather at matched record count, retrain, re-render,
+and compare on the existing yardstick.
+
+```powershell
+python -B gather_boundary.py --output checkpoints/camera_pool/train.npz --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 --entry_sampling camera --azimuth_range 0 360
+python -B gather_boundary.py --output checkpoints/camera_pool/test.npz --entries 16384 --paths_per_entry 16 --max_depth 128 --seed 402 --workers 8 --entry_sampling camera --azimuth_range 0 360
+python -B train_boundary.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
+python -B render_paired.py --model checkpoints/camera_model/model.pt --output_dir renders/camera_paired --width 512 --height 512 --spp 32 --seeds 101 102 103 104 105 106 107 108 --workers 8 --split_components
+```
+
+Outcomes:
+
+- **The render improves substantially.** The representational conclusion weakens
+  and this modelling lane reopens. The finding becomes a statement about training
+  distribution rather than about smooth densities.
+- **The render does not improve.** The claim becomes considerably stronger,
+  because the most obvious alternative explanation has been excluded by direct
+  experiment rather than by argument.
+
+Either result is worth having, and neither can be predicted from what is measured
+so far. Nothing else in this document should be started before this is run.
+
+Note that `--azimuth_range 0 360` trains across all views, which is what the
+multi-view evaluation and the rotation animation need. Restricting to a single
+azimuth would concentrate density further but would not generalise.
+
+Caveats: only primary camera rays are reproduced, so secondary rays after a ground
+bounce or a first-surface reflection are still out of distribution. Only the
+direction dimension has been analysed; position and wavelength coverage may differ.
+
+---
+
 ## A. Model-space results
 
 Distribution quality on held-out transport records, independent of rendering.

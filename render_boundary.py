@@ -22,8 +22,31 @@ from bsdf.dispersion import diamond_ior
 from utils.studio_env import studio_lighting, display_exposure
 
 
-def make_scene(checkpoint, width, height, azimuth=0., ambient=None, rfilter='box'):
+def tumble_matrix(angle_x, angle_y, angle_z):
+    """Object-to-world rotation matching eval.py's rotate_vertex, in radians.
+
+    eval.py animates by rotating the mesh about all three axes in the order X,
+    then Y, then Z, leaving camera, lights and ground fixed. That convention is
+    reproduced exactly here so boundary-model animations are comparable with the
+    legacy ones. Note the Y block follows eval.py's sign convention, which is the
+    transpose of the usual right-handed form.
+    """
+    ca, sa = math.cos(angle_x), math.sin(angle_x)
+    cb, sb = math.cos(angle_y), math.sin(angle_y)
+    cc, sc = math.cos(angle_z), math.sin(angle_z)
+    rx = np.array([[1, 0, 0], [0, ca, -sa], [0, sa, ca]])
+    ry = np.array([[cb, 0, sb], [0, 1, 0], [-sb, 0, cb]])
+    rz = np.array([[cc, -sc, 0], [sc, cc, 0], [0, 0, 1]])
+    return (rz @ ry @ rx).astype(np.float64)
+
+
+def make_scene(checkpoint, width, height, azimuth=0., ambient=None, rfilter='box',
+               rotation=None):
     vertices = checkpoint['vertices'].numpy()
+    if rotation is not None:
+        # The stone tumbles in world space; the model still reasons in object
+        # space, so render() maps queries and predictions through `rotation`.
+        vertices = (vertices @ np.asarray(rotation, dtype=np.float32).T).astype(np.float32)
     faces = checkpoint['faces'].numpy().astype(np.uint32)
     mesh = mi.Mesh('boundary_diamond', len(vertices), len(faces))
     params = mi.traverse(mesh)
@@ -71,9 +94,11 @@ def analytic_exit(first, stone, eta, max_depth, rng):
 
 def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
            mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25,
-           stratify_wavelength=False):
+           stratify_wavelength=False, rotation=None):
     rng = np.random.default_rng(seed)
     generator = torch.Generator().manual_seed(seed)
+    forward_rotation = None if rotation is None else np.asarray(rotation, dtype=np.float64)
+    inverse_rotation = None if rotation is None else forward_rotation.T
     metadata = checkpoint['metadata']
     image = np.zeros((height*width, 3), dtype=np.float64)
     # Exact split of the final image by whether the path used the learned operator.
@@ -139,8 +164,16 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                             state[4] = True
                             next_active.append(state)
                     else:
-                        features.append(list(np.asarray(si.p)/checkpoint['input_radius'])+
-                                        list(ray.d)+list(si.n)+[(float(ray.wavelengths[0])-595)/235])
+                        # The model is conditioned in object space. When the
+                        # stone is tumbling, map the world-space query back
+                        # through the inverse rotation before asking it.
+                        p_q = np.asarray(si.p); d_q = np.asarray(ray.d); n_q = np.asarray(si.n)
+                        if rotation is not None:
+                            p_q = inverse_rotation @ p_q
+                            d_q = inverse_rotation @ d_q
+                            n_q = inverse_rotation @ n_q
+                        features.append(list(p_q/checkpoint['input_radius'])+
+                                        list(d_q)+list(n_q)+[(float(ray.wavelengths[0])-595)/235])
                         pending.append(state)
                 else:
                     bs, weight = si.bsdf().sample(mi.BSDFContext(), si, float(rng.random()),
@@ -163,11 +196,19 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                     facet = int(prediction['exit_facet'][i])
                     # spawn_ray uses Mitsuba's surface-offset convention.
                     exit_si = mi.SurfaceInteraction3f()
-                    exit_si.p = mi.Point3f(prediction['exit_position'][i].numpy())
-                    exit_si.n = mi.Normal3f(model.normal[facet].numpy())
+                    # Predictions come back in object space; rotate them out.
+                    exit_p = prediction['exit_position'][i].numpy()
+                    exit_n = model.normal[facet].numpy()
+                    exit_d = prediction['exit_direction'][i].numpy()
+                    if rotation is not None:
+                        exit_p = forward_rotation @ exit_p
+                        exit_n = forward_rotation @ exit_n
+                        exit_d = forward_rotation @ exit_d
+                    exit_si.p = mi.Point3f(exit_p)
+                    exit_si.n = mi.Normal3f(exit_n)
                     exit_si.wavelengths = state[1].wavelengths
                     exit_si.time = state[1].time
-                    out = exit_si.spawn_ray(mi.Vector3f(prediction['exit_direction'][i].numpy()))
+                    out = exit_si.spawn_ray(mi.Vector3f(exit_d))
                     if stone.ray_test(out):
                         # Do not tunnel through the stone or invent a corrected exit.
                         stats['predicted_reentry'] += 1
@@ -205,6 +246,12 @@ def main():
     parser.add_argument('--scene_depth', type=int, default=8)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--rotation_deg', type=float, nargs=3, default=None,
+                        metavar=('X', 'Y', 'Z'),
+                        help='Tumble the stone by these degrees about X, then Y, '
+                             'then Z, leaving camera, lights and ground fixed. '
+                             'Matches the convention eval.py animates with. Model '
+                             'queries are mapped into object space automatically.')
     parser.add_argument('--stratify_wavelength', action='store_true',
                         help='Stratify the hero wavelength across a pixel samples '
                              'instead of drawing it independently. Unbiased, free, '
@@ -239,8 +286,10 @@ def main():
     v, f = checkpoint['vertices'].numpy(), checkpoint['faces'].numpy().astype(np.uint32)
     if hashlib.sha256(v.tobytes()+f.tobytes()).hexdigest() != m['geometry_sha256']:
         raise ValueError('Checkpoint geometry hash mismatch')
+    rotation = (None if args.rotation_deg is None
+                else tumble_matrix(*[math.radians(v) for v in args.rotation_deg]))
     scene, stone, mesh = make_scene(checkpoint,args.width,args.height,args.azimuth,
-                                    rfilter=args.rfilter)
+                                    rfilter=args.rfilter, rotation=rotation)
     prior = None
     if args.rdm_prior is not None:
         from neural.boundary_prior import BoundaryPrior
@@ -252,7 +301,7 @@ def main():
     begin = time.perf_counter()
     image, stats, components = render(scene,stone,mesh,model,checkpoint,args.width,args.height,args.spp,args.seed,
                           args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction,
-                          args.stratify_wavelength)
+                          args.stratify_wavelength,rotation)
     if not np.isfinite(image).all():
         raise RuntimeError('Nonfinite render')
     frames = args.output_dir/'frames'
@@ -267,6 +316,7 @@ def main():
                   prior_fraction=args.prior_fraction if prior is not None else 0.,mode=args.mode, model=str(args.model), width=args.width,height=args.height,
                   spp=args.spp,seed=args.seed,scene_depth=args.scene_depth,batch_size=args.batch_size,
                   azimuth=args.azimuth,rfilter=args.rfilter,
+                  rotation_deg=args.rotation_deg,
                   stratify_wavelength=args.stratify_wavelength,
                   internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
                   stats=stats,geometry_sha256=m['geometry_sha256'],

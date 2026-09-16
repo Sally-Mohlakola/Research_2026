@@ -7,6 +7,7 @@ throughput, not radiance or a continuous exit PDF. Geometry remains object-space
 import argparse
 import hashlib
 import json
+import math
 import multiprocessing
 from pathlib import Path
 
@@ -39,14 +40,49 @@ def dielectric(si, eta):
     return float(f), mi.reflect(si.wi), mi.refract(si.wi, ct, eta_ti), float(eta_ti)
 
 
+def camera_ray(rng, azimuth_range, fov=30.):
+    """A primary camera ray from the studio rig, matching render_boundary.make_scene.
+
+    Uniform sphere sampling spreads entry states over every incoming direction,
+    but a renderer only queries the narrow cone its camera sees: at azimuth 0
+    with a 30 degree field of view, under 3 percent of uniformly sampled entry
+    directions fall within 15 degrees of the camera axis. Training density in the
+    region that actually gets queried is therefore far lower than the nominal
+    entry count suggests. This sampler draws entry states from the query
+    distribution instead.
+
+    Only primary camera rays are reproduced. Secondary rays, after a ground
+    bounce or a first-surface reflection, reach the stone from wider angles and
+    are not covered here.
+    """
+    low, high = azimuth_range
+    a = math.radians(rng.uniform(low, high))
+    origin = np.array([-1.8*math.sin(a), 1.8*math.cos(a), 4.])
+    forward = -origin/np.linalg.norm(origin)
+    right = np.cross(forward, np.array([0., 1., 0.]))
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+    extent = math.tan(math.radians(fov)/2.)
+    # Film point in [-1, 1]^2; the rig uses a square film.
+    px, py = rng.uniform(-1., 1., size=2)
+    direction = forward + px*extent*right + py*extent*up
+    direction /= np.linalg.norm(direction)
+    return origin, direction
+
+
 def gather(scene, radius, parameters, entries, paths_per_entry, max_depth, seed,
-           dispersion=True, entry_offset=0, seed_sequence=None):
+           dispersion=True, entry_offset=0, seed_sequence=None,
+           entry_sampling='uniform', azimuth_range=(0., 360.)):
     """Trace paths_per_entry paths from each of `entries` sampled entry states.
 
     `entry_offset` shifts the emitted entry_id range so parallel chunks stay
     globally distinct, and `seed_sequence` replaces `seed` for a chunked stream.
-    Defaults reproduce the original single-process behaviour exactly.
+    `entry_sampling` selects uniform-sphere entry states or the camera query
+    distribution. Defaults reproduce the original single-process behaviour
+    exactly.
     """
+    if entry_sampling not in ('uniform', 'camera'):
+        raise ValueError("entry_sampling must be 'uniform' or 'camera'")
     if entries < 1 or paths_per_entry < 1 or max_depth < 2:
         raise ValueError("Require entries >= 1, paths_per_entry >= 1, max_depth >= 2")
     rng = np.random.default_rng(seed if seed_sequence is None else seed_sequence)
@@ -58,15 +94,19 @@ def gather(scene, radius, parameters, entries, paths_per_entry, max_depth, seed,
             attempts += 1
             if attempts > entries * 10000:
                 raise RuntimeError("Too many misses while sampling entry states")
-            u = rng.normal(size=3)
-            u /= np.linalg.norm(u)
-            axis = np.array([0., 0., 1.]) if abs(u[2]) < .9 else np.array([1., 0., 0.])
-            tangent = np.cross(u, axis)
-            tangent /= np.linalg.norm(tangent)
-            bitangent = np.cross(u, tangent)
-            r, phi = radius * np.sqrt(rng.random()), 2 * np.pi * rng.random()
-            origin = 3 * radius * u + r * (np.cos(phi)*tangent + np.sin(phi)*bitangent)
-            ray = mi.Ray3f(mi.Point3f(origin), mi.Vector3f(-u))
+            if entry_sampling == 'camera':
+                origin, travel = camera_ray(rng, azimuth_range)
+            else:
+                u = rng.normal(size=3)
+                u /= np.linalg.norm(u)
+                axis = np.array([0., 0., 1.]) if abs(u[2]) < .9 else np.array([1., 0., 0.])
+                tangent = np.cross(u, axis)
+                tangent /= np.linalg.norm(tangent)
+                bitangent = np.cross(u, tangent)
+                r, phi = radius * np.sqrt(rng.random()), 2 * np.pi * rng.random()
+                origin = 3 * radius * u + r * (np.cos(phi)*tangent + np.sin(phi)*bitangent)
+                travel = -u
+            ray = mi.Ray3f(mi.Point3f(origin), mi.Vector3f(travel))
             first = scene.ray_intersect(ray)
             if first.is_valid() and first.wi.z > 0:
                 break
@@ -119,7 +159,7 @@ def gather(scene, radius, parameters, entries, paths_per_entry, max_depth, seed,
             records.append(dict(
                 entry_id=entry_id, repeat_id=repeat,
                 entry_position=list(first.p), entry_normal=list(first.n),
-                entry_direction=list(-mi.Vector3f(u)),
+                entry_direction=list(mi.Vector3f(travel)),
                 entry_local_wi=list(first.wi), entry_facet=int(first.prim_index),
                 wavelength_nm=wavelength, wavelength_pdf=1./470.,
                 entry_transmittance=1.-entry_f,
@@ -148,16 +188,19 @@ def _chunk_bounds(entries, workers):
 
 def _worker(task):
     """Build an independent scalar scene per process; Mitsuba objects do not pickle."""
-    diamond_name, offset, count, paths_per_entry, max_depth, child, dispersion = task
+    (diamond_name, offset, count, paths_per_entry, max_depth, child, dispersion,
+     entry_sampling, azimuth_range) = task
     parameters = get_diamond_parameters(diamond_name)
     scene, vertices, _ = build_scene(parameters)
     radius = float(np.linalg.norm(vertices, axis=1).max())
     return gather(scene, radius, parameters, count, paths_per_entry, max_depth,
-                  None, dispersion, entry_offset=offset, seed_sequence=child)
+                  None, dispersion, entry_offset=offset, seed_sequence=child,
+                  entry_sampling=entry_sampling, azimuth_range=azimuth_range)
 
 
 def gather_parallel(diamond_name, entries, paths_per_entry, max_depth, seed,
-                    dispersion, workers):
+                    dispersion, workers, entry_sampling='uniform',
+                    azimuth_range=(0., 360.)):
     """Chunked gather. Deterministic given (seed, workers, entries, paths_per_entry).
 
     Changing the worker count repartitions the random streams and therefore
@@ -165,7 +208,8 @@ def gather_parallel(diamond_name, entries, paths_per_entry, max_depth, seed,
     """
     bounds = _chunk_bounds(entries, workers)
     children = np.random.SeedSequence(seed).spawn(len(bounds))
-    tasks = [(diamond_name, offset, count, paths_per_entry, max_depth, child, dispersion)
+    tasks = [(diamond_name, offset, count, paths_per_entry, max_depth, child,
+              dispersion, entry_sampling, azimuth_range)
              for (offset, count), child in zip(bounds, children)]
     with multiprocessing.Pool(len(bounds)) as pool:
         results = pool.map(_worker, tasks)
@@ -183,6 +227,17 @@ def main():
     parser.add_argument('--max_depth', type=int, default=128)
     parser.add_argument('--seed', type=int, default=17)
     parser.add_argument('--no_dispersion', action='store_true')
+    parser.add_argument('--entry_sampling', choices=['uniform', 'camera'],
+                        default='uniform',
+                        help='uniform spreads entry states over every incoming '
+                             'direction; camera draws them from the distribution a '
+                             'render actually queries. Under 3 percent of uniform '
+                             'entry states fall within the camera cone, so a render '
+                             'sees far lower training density than the entry count '
+                             'suggests.')
+    parser.add_argument('--azimuth_range', type=float, nargs=2, default=[0., 360.],
+                        metavar=('LOW', 'HIGH'),
+                        help='Camera azimuth range for --entry_sampling camera.')
     parser.add_argument('--workers', type=int, default=1,
                         help='Parallel gather processes. The stream partition '
                              'depends on this count, so reproducing a dataset '
@@ -200,11 +255,14 @@ def main():
     if workers > 1:
         data, attempts = gather_parallel(args.diamond_name, args.entries,
                                          args.paths_per_entry, args.max_depth,
-                                         args.seed, not args.no_dispersion, workers)
+                                         args.seed, not args.no_dispersion, workers,
+                                         args.entry_sampling, tuple(args.azimuth_range))
     else:
         data, attempts = gather(scene, float(np.linalg.norm(vertices, axis=1).max()),
                                params, args.entries, args.paths_per_entry,
-                               args.max_depth, args.seed, not args.no_dispersion)
+                               args.max_depth, args.seed, not args.no_dispersion,
+                               entry_sampling=args.entry_sampling,
+                               azimuth_range=tuple(args.azimuth_range))
     metadata = dict(schema_version=1, diamond_name=args.diamond_name,
                     parameters=params, seed=args.seed, max_depth=args.max_depth,
                     dispersion=not args.no_dispersion, attempts=attempts,
@@ -215,7 +273,14 @@ def main():
                     coordinates='object_space', direction_convention='entry points into stone; exit points out',
                     transport_mode='radiance', conditioning='entry transmission forced; multiply entry_transmittance once',
                     status_codes={'escaped':0, 'truncated':1, 'invalid':2},
-                    entry_sampling='uniform sphere direction and uniform projected bounding disc, conditioned on hit',
+                    entry_sampling=args.entry_sampling,
+                    entry_sampling_detail=(
+                        'uniform sphere direction and uniform projected bounding disc, conditioned on hit'
+                        if args.entry_sampling == 'uniform' else
+                        'primary studio camera rays over azimuth range %s, conditioned on hit; '
+                        'secondary rays after ground bounce or first-surface reflection are not covered'
+                        % (tuple(args.azimuth_range),)),
+                    azimuth_range=list(args.azimuth_range),
                     pdf_note='branch_log_probability is conditional discrete path probability, NOT exit density',
                     normalization='throughput already contains physical/proposal branch ratios; do not divide by branch probability again')
     args.output.parent.mkdir(parents=True, exist_ok=True)
