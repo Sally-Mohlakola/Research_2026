@@ -17,7 +17,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 from ground_truth.cuts import make_diamond
 from ground_truth.pear_geometry import make_pear_brilliant
@@ -38,15 +38,54 @@ def watertight(vertices, faces):
     return boundary, non_manifold
 
 
+def view_direction(elevation, azimuth):
+    """Unit vector from the origin toward the camera, in matplotlib's convention."""
+    e, a = np.radians(elevation), np.radians(azimuth)
+    return np.array([np.cos(e)*np.cos(a), np.cos(e)*np.sin(a), np.sin(e)])
+
+
+def feature_edges(vertices, faces, normals, visible, tolerance=1e-5):
+    """Edges where the surface actually creases, not every triangle edge.
+
+    A flat facet is triangulated, so drawing every edge scores a table with the
+    diagonals of its own fan -- the cross that a real step cut's table does not
+    have. Those interior edges join two coplanar triangles and carry no
+    geometry, so only edges whose two faces disagree on a normal are drawn, and
+    only where at least one of those faces is turned toward the camera.
+
+    The tolerance has to sit below the smallest real crease. A step cut at
+    step_angle_spread=0.06 puts only about two degrees between neighbouring
+    terraces, so a loose tolerance erases the very step lines the cut is
+    named for; 1e-5 is roughly a quarter of a degree, well under that and
+    well over float32 noise on a genuinely flat facet.
+    """
+    shared = defaultdict(list)
+    for index, face in enumerate(faces):
+        for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            shared[(min(a, b), max(a, b))].append(index)
+    return [[vertices[a], vertices[b]] for (a, b), owners in shared.items()
+            if visible[owners].any()
+            and (len(owners) != 2
+                 or normals[owners[0]] @ normals[owners[1]] < 1.-tolerance)]
+
+
 def draw(axis, vertices, faces, elevation, azimuth, title):
     triangles = vertices[faces]
     normals = np.cross(triangles[:, 1]-triangles[:, 0], triangles[:, 2]-triangles[:, 0])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     shade = np.clip(normals @ (LIGHT/np.linalg.norm(LIGHT)), 0, 1)
     colours = plt.cm.bone(0.25 + 0.7*shade)
-    collection = Poly3DCollection(triangles, facecolors=colours,
-                                  edgecolors=(0.15, 0.2, 0.3, 0.9), linewidths=0.6)
-    axis.add_collection3d(collection)
+    # Matplotlib does not hide surfaces behind other surfaces, so without
+    # culling the culet and the far facets read through the table as phantom
+    # edges. Drop the back faces and the silhouette is what the eye expects.
+    visible = normals @ view_direction(elevation, azimuth) > 0.
+    # Edge colour matches the fill so adjacent coplanar triangles do not leave
+    # hairline seams where one flat facet has been triangulated.
+    axis.add_collection3d(Poly3DCollection(triangles[visible], facecolors=colours[visible],
+                                           edgecolors=colours[visible], linewidths=0.4))
+    axis.add_collection3d(Line3DCollection(
+        feature_edges(vertices, faces, normals, visible),
+        colors=[(0.15, 0.2, 0.3, 0.9)], linewidths=0.7))
     extent = float(np.abs(vertices).max())*1.05
     axis.set_xlim(-extent, extent)
     axis.set_ylim(-extent, extent)
