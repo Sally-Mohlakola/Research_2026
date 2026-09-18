@@ -40,11 +40,13 @@ def run(command, log):
 
 def render_task(job):
     (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
-     logs, split, rfilter) = job
+     logs, split, rfilter, deterministic) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
                '--scene_depth', scene_depth, '--rfilter', rfilter]
+    if deterministic:
+        command.append('--deterministic_exit')
     if split:
         command.append('--split_components')
     run(command, logs/('render_%s_s%s.log' % (mode, seed)))
@@ -75,6 +77,10 @@ def main():
                         help='Film reconstruction filter, applied to both modes so the '
                              'comparison stays paired. Gaussian looks cleaner but '
                              'correlates neighbouring pixels.')
+    parser.add_argument('--deterministic_exit', action='store_true',
+                        help='Decode learned exits at the mixture component mean, '
+                             'keeping the discrete branch structure but removing '
+                             'the within-branch Gaussian spread.')
     parser.add_argument('--split_components', action='store_true',
                         help='Split each frame by whether the path went through the '
                              'stone interior, and report the learned component in '
@@ -102,7 +108,7 @@ def main():
             directories[mode].append(directory)
             jobs.append((directory, args.model, mode, args.azimuth, seed,
                          args.width, args.height, args.spp, args.scene_depth, logs,
-                         args.split_components, args.rfilter))
+                         args.split_components, args.rfilter, args.deterministic_exit))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -130,6 +136,7 @@ def main():
                    width=args.width, height=args.height, spp_each=args.spp,
                    seeds=args.seeds, effective_spp=effective,
                    modes=args.modes, workers=args.workers, rfilter=args.rfilter,
+                   deterministic_exit=args.deterministic_exit,
                    render_seconds=render_seconds, merged=merged,
                    result_images={m: str(p) for m, p in results.items()},
                    note='Per-seed renders under <mode>/s<seed>/ are ingredients at '

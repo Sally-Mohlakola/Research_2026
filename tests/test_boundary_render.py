@@ -30,7 +30,7 @@ assert np.max(np.abs(image.mean((0,1))-1))<.1
 assert stats['analytic_escaped']>0
 class UnitExit:
     normal=model.normal
-    def sample(self,x,generator=None):
+    def sample(self,x,generator=None,deterministic=False):
         n=len(x)
         facet=int(torch.argmax(model.normal[:,2]))
         return dict(escaped=torch.ones(n,dtype=torch.bool),exit_facet=torch.full((n,),facet),

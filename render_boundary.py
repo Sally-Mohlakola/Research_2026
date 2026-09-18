@@ -94,7 +94,7 @@ def analytic_exit(first, stone, eta, max_depth, rng):
 
 def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
            mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25,
-           stratify_wavelength=False, rotation=None):
+           stratify_wavelength=False, rotation=None, deterministic_exit=False):
     rng = np.random.default_rng(seed)
     generator = torch.Generator().manual_seed(seed)
     forward_rotation = None if rotation is None else np.asarray(rotation, dtype=np.float64)
@@ -184,7 +184,8 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
             if pending:
                 inputs = torch.tensor(features, dtype=torch.float32)
                 if prior is None:
-                    prediction = model.sample(inputs, generator)
+                    prediction = model.sample(inputs, generator,
+                                              deterministic=deterministic_exit)
                 else:
                     from neural.boundary_prior import sample_mixture
                     prediction = sample_mixture(model, prior, inputs, prior_fraction, generator)
@@ -252,6 +253,12 @@ def main():
                              'then Z, leaving camera, lights and ground fixed. '
                              'Matches the convention eval.py animates with. Model '
                              'queries are mapped into object space automatically.')
+    parser.add_argument('--deterministic_exit', action='store_true',
+                        help='Decode each learned exit at its mixture component '
+                             'mean instead of sampling the Gaussian spread. The '
+                             'exit facet and component are still sampled, so the '
+                             'discrete branch structure is kept and only the '
+                             'within-branch blur is removed.')
     parser.add_argument('--stratify_wavelength', action='store_true',
                         help='Stratify the hero wavelength across a pixel samples '
                              'instead of drawing it independently. Unbiased, free, '
@@ -301,7 +308,7 @@ def main():
     begin = time.perf_counter()
     image, stats, components = render(scene,stone,mesh,model,checkpoint,args.width,args.height,args.spp,args.seed,
                           args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction,
-                          args.stratify_wavelength,rotation)
+                          args.stratify_wavelength,rotation,args.deterministic_exit)
     if not np.isfinite(image).all():
         raise RuntimeError('Nonfinite render')
     frames = args.output_dir/'frames'
@@ -317,6 +324,7 @@ def main():
                   spp=args.spp,seed=args.seed,scene_depth=args.scene_depth,batch_size=args.batch_size,
                   azimuth=args.azimuth,rfilter=args.rfilter,
                   rotation_deg=args.rotation_deg,
+                  deterministic_exit=args.deterministic_exit,
                   stratify_wavelength=args.stratify_wavelength,
                   internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
                   stats=stats,geometry_sha256=m['geometry_sha256'],

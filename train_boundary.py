@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from neural.boundary_data import load_boundary, split_entries
-from neural.boundary_model import BoundaryModel, encode_data
+from neural.boundary_model import HEADS, encode_data
 
 
 def evaluate(model, tensors, indices):
@@ -38,6 +38,12 @@ def main():
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--width', type=int, default=64)
     parser.add_argument('--components', type=int, default=4)
+    parser.add_argument('--head', choices=sorted(HEADS), default='mixture',
+                        help="mixture is the Gaussian-mixture density; clone is the "
+                             "deterministic regression baseline. For clone the third "
+                             "loss term is a regression error, so the reported joint "
+                             "figure is not a likelihood and is not comparable across "
+                             "heads. Compare on exit-prediction error or on renders.")
     parser.add_argument('--lr', type=float, default=.001)
     parser.add_argument('--seed', type=int, default=23)
     args = parser.parse_args()
@@ -66,7 +72,7 @@ def main():
     tensors = [torch.from_numpy(a) for a in (x, facet, y, escaped)]
     train_idx = torch.from_numpy(np.flatnonzero(train))
     val_idx = torch.from_numpy(np.flatnonzero(validation))
-    model = BoundaryModel(vertices, faces, args.width, args.components)
+    model = HEADS[args.head](vertices, faces, args.width, args.components)
     initial = evaluate(model, tensors, val_idx)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     best, best_state, best_epoch = float('inf'), None, 0
@@ -98,14 +104,18 @@ def main():
     assert torch.isfinite(sample['exit_position']).all() and (outward > 0).all()
     args.output.mkdir(parents=True)
     checkpoint = dict(schema_version=1, state_dict=best_state, width=args.width,
-                      components=args.components, metadata=metadata,
+                      components=args.components, head=args.head, metadata=metadata,
                       vertices=torch.from_numpy(vertices), faces=torch.from_numpy(faces.astype(np.int64)),
                       input_radius=float(np.linalg.norm(vertices, axis=1).max()),
                       seed=args.seed, best_epoch=best_epoch,
                       source_sha256=hashlib.sha256(args.data.read_bytes()).hexdigest(),
                       train_entry_ids=np.unique(data['entry_id'][train]).tolist(),
                       validation_entry_ids=np.unique(data['entry_id'][validation]).tolist(),
-                      density_measure='barycentric logits and outgoing tangent slopes; not solid-angle/area PDF')
+                      density_measure='barycentric logits and outgoing tangent slopes; not solid-angle/area PDF',
+                      head_note=('Gaussian mixture density over exit coordinates'
+                                 if args.head == 'mixture' else
+                                 'deterministic smooth-L1 regression of exit coordinates; '
+                                 'the third loss term is not a likelihood'))
     torch.save(checkpoint, args.output/'model.pt')
     report = dict(initial_validation=initial, best_validation=metrics,
                   best_epoch=best_epoch, train_records=int(train.sum()),

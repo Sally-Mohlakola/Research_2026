@@ -1,6 +1,4 @@
-# The working copy lives in Research_Progress_2026/ and duplicates this tree,
-# plus ~2 GB of renders and checkpoints. Source is maintained here at the root.
-Research_Progress_2026/
+
 
 # Generated data: gathered datasets, trained models, rendered frames.
 renders/
@@ -9,3 +7,5 @@ checkpoints/
 # Python bytecode
 __pycache__/
 *.pyc
+
+ground_truth/

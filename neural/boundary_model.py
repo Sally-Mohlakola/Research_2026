@@ -124,14 +124,25 @@ class BoundaryModel(nn.Module):
         return torch.where(supported, log_pdf, torch.full_like(log_pdf, -torch.inf))
 
     @torch.no_grad()
-    def sample(self, x, generator=None):
+    def sample(self, x, generator=None, deterministic=False):
+        """Draw an escape event.
+
+        `deterministic` keeps the discrete structure -- the exit facet and the
+        mixture component are still sampled -- but decodes each draw at its
+        component mean instead of adding the Gaussian spread. Measured transport
+        is a handful of discrete branches each with 0.00 degrees of within-branch
+        spread, so this is the limiting case that matches the physics, and it
+        isolates the learned spread as the only thing that changes.
+        """
         h = self.encoder(x)
         escaped = torch.rand(len(x), device=x.device, generator=generator) < torch.sigmoid(self.escape(h).squeeze(-1))
         facet = torch.multinomial(self.facet(h).softmax(-1), 1, generator=generator).squeeze(-1)
         logits, means, log_std = self.distribution(h, facet)
         component = torch.multinomial(logits.softmax(-1), 1, generator=generator).squeeze(-1)
         index = torch.arange(len(x), device=x.device)
-        y = means[index, component] + log_std[index, component].exp()*torch.randn((len(x), 4), device=x.device, generator=generator)
+        y = means[index, component]
+        if not deterministic:
+            y = y + log_std[index, component].exp()*torch.randn((len(x), 4), device=x.device, generator=generator)
         bary = torch.cat([y[:, :2], torch.zeros_like(y[:, :1])], -1).softmax(-1)
         position = (self.triangles[facet]*bary[:, :, None]).sum(1)
         direction = F.normalize(self.normal[facet]+y[:, 2:3]*self.tangent[facet]+y[:, 3:4]*self.bitangent[facet], dim=-1)
@@ -140,13 +151,104 @@ class BoundaryModel(nn.Module):
                     throughput=escaped.float())
 
 
+class BoundaryCloneModel(nn.Module):
+    """Behavioural cloning baseline: deterministic regression of the exit.
+
+    Shares BoundaryModel's inputs, encoder, escape head, facet head and decode,
+    and replaces the Gaussian mixture over exit coordinates with direct
+    regression. Only the coordinate head and its loss differ, so a comparison
+    against BoundaryModel isolates one variable: distributional against
+    deterministic.
+
+    Regression is conditioned on the exit facet, which matters. Measured
+    transport reaches a median of two distinct facets per entry state, so
+    regressing without that conditioning would average across branches and
+    reproduce the very blur this baseline exists to test. Within a single facet
+    the measured spread of real exit directions is 0.00 degrees, so the
+    within-facet target is effectively a deterministic function and least
+    squares is well posed.
+
+    The loss is smooth L1 rather than plain squared error. Barycentric logits are
+    unbounded and reach magnitude ~17 near facet edges, and tangent slopes blow
+    up at grazing angles, so squared error would be dominated by a few extreme
+    targets. Smooth L1 is quadratic near zero and linear in the tails, which
+    gives the baseline its best chance rather than handicapping it.
+    """
+
+    def __init__(self, vertices, faces, width=64, components=4):
+        super().__init__()
+        if width < 1:
+            raise ValueError('width must be positive')
+        tri, t, b, n = frames(vertices, faces)
+        for name, value in [('triangles', tri), ('tangent', t), ('bitangent', b), ('normal', n)]:
+            self.register_buffer(name, torch.as_tensor(value, dtype=torch.float32))
+        # `components` is accepted and stored so checkpoints stay interchangeable;
+        # a deterministic head has no mixture components.
+        self.width, self.components = width, components
+        self.encoder = nn.Sequential(nn.Linear(10, width), nn.SiLU(), nn.Linear(width, width), nn.SiLU())
+        self.escape = nn.Linear(width, 1)
+        self.facet = nn.Linear(width, len(faces))
+        self.embedding = nn.Embedding(len(faces), 16)
+        self.regressor = nn.Sequential(nn.Linear(width+16, width), nn.SiLU(), nn.Linear(width, 4))
+
+    def coordinates(self, h, facet):
+        return self.regressor(torch.cat([h, self.embedding(facet)], dim=-1))
+
+    def losses(self, x, facet, y, escaped):
+        """Returns (escape BCE, facet cross-entropy, coordinate smooth L1).
+
+        The third term is a regression error, not a negative log likelihood, so
+        the combined figure reported during training is not a joint NLL and is
+        not comparable with BoundaryModel's. Compare the two on exit-prediction
+        error or on rendered images instead.
+        """
+        h = self.encoder(x)
+        escape_loss = F.binary_cross_entropy_with_logits(self.escape(h).squeeze(-1), escaped.float())
+        if not escaped.any():
+            return escape_loss, escape_loss*0, escape_loss*0
+        facet_loss = F.cross_entropy(self.facet(h[escaped]), facet[escaped])
+        # Teacher forcing: regress against the true facet during training, and
+        # against the predicted facet at inference.
+        predicted = self.coordinates(h[escaped], facet[escaped])
+        coordinate_loss = F.smooth_l1_loss(predicted, y[escaped])
+        return escape_loss, facet_loss, coordinate_loss
+
+    @torch.no_grad()
+    def sample(self, x, generator=None, deterministic=False):
+        """Predict one exit per query.
+
+        The exit coordinates are always deterministic. `deterministic` selects
+        how the facet is chosen: False samples it from the categorical, keeping
+        the discrete branch multiplicity that real transport has; True takes the
+        most likely facet, which is pure behavioural cloning.
+        """
+        h = self.encoder(x)
+        escaped = torch.rand(len(x), device=x.device, generator=generator) < torch.sigmoid(self.escape(h).squeeze(-1))
+        probability = self.facet(h).softmax(-1)
+        facet = (probability.argmax(-1) if deterministic
+                 else torch.multinomial(probability, 1, generator=generator).squeeze(-1))
+        y = self.coordinates(h, facet)
+        bary = torch.cat([y[:, :2], torch.zeros_like(y[:, :1])], -1).softmax(-1)
+        position = (self.triangles[facet]*bary[:, :, None]).sum(1)
+        direction = F.normalize(self.normal[facet]+y[:, 2:3]*self.tangent[facet]+y[:, 3:4]*self.bitangent[facet], dim=-1)
+        return dict(escaped=escaped, exit_facet=facet, exit_position=position,
+                    exit_direction=direction, barycentric=bary,
+                    throughput=escaped.float())
+
+
+HEADS = {'mixture': BoundaryModel, 'clone': BoundaryCloneModel}
+
+
 def load_model(path):
     """Load the self-contained CPU model and its data conventions."""
     checkpoint = torch.load(path, map_location='cpu', weights_only=True)
     if checkpoint.get('schema_version') != 1:
         raise ValueError('Unsupported model schema')
-    model = BoundaryModel(checkpoint['vertices'].numpy(), checkpoint['faces'].numpy(),
-                          checkpoint['width'], checkpoint['components'])
+    head = checkpoint.get('head', 'mixture')
+    if head not in HEADS:
+        raise ValueError('Unknown coordinate head %r' % head)
+    model = HEADS[head](checkpoint['vertices'].numpy(), checkpoint['faces'].numpy(),
+                        checkpoint['width'], checkpoint['components'])
     model.load_state_dict(checkpoint['state_dict'])
     model.eval()
     return model, checkpoint
