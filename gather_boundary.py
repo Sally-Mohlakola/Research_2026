@@ -17,14 +17,13 @@ import drjit as dr
 import numpy as np
 
 mi.set_variant("scalar_rgb")
-from ground_truth.brilliant_geometry import make_round_brilliant
+from ground_truth.cuts import make_diamond
 from config.parameters import get_diamond_parameters
 from bsdf.dispersion import diamond_ior
 
 
 def build_scene(parameters):
-    geometry = {k: v for k, v in parameters.items() if k not in ("int_ior", "ext_ior")}
-    vertices, faces = make_round_brilliant(**geometry)
+    vertices, faces = make_diamond(parameters)
     mesh = mi.Mesh("boundary_diamond", len(vertices), len(faces))
     params = mi.traverse(mesh)
     params["vertex_positions"] = vertices.ravel()

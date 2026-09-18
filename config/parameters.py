@@ -39,6 +39,23 @@ DIAMOND_VARIANTS= {
 }
 
 
+PEAR_DEFAULTS = {
+    "cut": "pear",
+    "girdle_radius": 1.0,
+    "crown_angle_deg": 34.5,
+    "pavilion_angle_deg": 40.75,
+    "table_frac": 0.56,
+    # 16 girdle points gives 62 triangles, the closest match to the 64 of
+    # round_diamond_gia, so a cut ablation changes the outline and not the
+    # facet count. Triangles are 4n-2, so no n gives exactly 64.
+    "num_girdle_points": 16,
+    "taper": 1.0,
+    "int_ior": 2.419,
+    "ext_ior": 1.000277,
+}
+DIAMOND_VARIANTS["pear_brilliant"] = PEAR_DEFAULTS
+
+
 def get_diamond_parameters(name: str) -> dict:
     if name not in DIAMOND_VARIANTS:
         valid = ", ".join(sorted(DIAMOND_VARIANTS.keys()))
