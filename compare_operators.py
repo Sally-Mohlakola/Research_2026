@@ -163,10 +163,13 @@ def main():
           % ('real transport', '-', '0.00', '-', '1.000',
              reference['distinct_facets_per_16'], reference['within_branch_spread_deg']))
     for name, s in report['operators'].items():
-        print('%-16s %8s %9.2f %9.2f %9.3f %9.2f %9.2f'
+        # A deterministic coordinate head gives exactly 0.0 spread, which is a
+        # real measurement rather than a missing one, so test for None.
+        blur = s['within_branch_spread_deg']
+        print('%-16s %8s %9.2f %9.2f %9.3f %9.2f %9s'
               % (name, s['head'], s['angle_nearest_deg'], s['angle_matched_deg'],
                  s['facet_hit_rate'], s['distinct_facets_per_16'],
-                 s['within_branch_spread_deg'] if s['within_branch_spread_deg'] else float('nan')))
+                 'n/a' if blur is None else '%.2f' % blur))
     print('\nWrote %s' % args.output)
 
 
