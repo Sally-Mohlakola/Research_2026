@@ -124,7 +124,7 @@ class BoundaryModel(nn.Module):
         return torch.where(supported, log_pdf, torch.full_like(log_pdf, -torch.inf))
 
     @torch.no_grad()
-    def sample(self, x, generator=None, deterministic=False):
+    def sample(self, x, generator=None, deterministic=False, facet=None):
         """Draw an escape event.
 
         `deterministic` keeps the discrete structure -- the exit facet and the
@@ -133,10 +133,16 @@ class BoundaryModel(nn.Module):
         is a handful of discrete branches each with 0.00 degrees of within-branch
         spread, so this is the limiting case that matches the physics, and it
         isolates the learned spread as the only thing that changes.
+
+        `facet` overrides the exit-facet categorical with a caller-supplied
+        branch. Passing the true facet turns the model into a within-facet
+        decoder and isolates branch selection as the only error source, which
+        is the upper bound the oracle experiment needs.
         """
         h = self.encoder(x)
         escaped = torch.rand(len(x), device=x.device, generator=generator) < torch.sigmoid(self.escape(h).squeeze(-1))
-        facet = torch.multinomial(self.facet(h).softmax(-1), 1, generator=generator).squeeze(-1)
+        if facet is None:
+            facet = torch.multinomial(self.facet(h).softmax(-1), 1, generator=generator).squeeze(-1)
         logits, means, log_std = self.distribution(h, facet)
         component = torch.multinomial(logits.softmax(-1), 1, generator=generator).squeeze(-1)
         index = torch.arange(len(x), device=x.device)
@@ -214,19 +220,24 @@ class BoundaryCloneModel(nn.Module):
         return escape_loss, facet_loss, coordinate_loss
 
     @torch.no_grad()
-    def sample(self, x, generator=None, deterministic=False):
+    def sample(self, x, generator=None, deterministic=False, facet=None):
         """Predict one exit per query.
 
         The exit coordinates are always deterministic. `deterministic` selects
         how the facet is chosen: False samples it from the categorical, keeping
         the discrete branch multiplicity that real transport has; True takes the
         most likely facet, which is pure behavioural cloning.
+
+        `facet` overrides that choice with a caller-supplied branch, which is
+        the inference-time counterpart of the teacher forcing `losses` already
+        uses during training.
         """
         h = self.encoder(x)
         escaped = torch.rand(len(x), device=x.device, generator=generator) < torch.sigmoid(self.escape(h).squeeze(-1))
         probability = self.facet(h).softmax(-1)
-        facet = (probability.argmax(-1) if deterministic
-                 else torch.multinomial(probability, 1, generator=generator).squeeze(-1))
+        if facet is None:
+            facet = (probability.argmax(-1) if deterministic
+                     else torch.multinomial(probability, 1, generator=generator).squeeze(-1))
         y = self.coordinates(h, facet)
         bary = torch.cat([y[:, :2], torch.zeros_like(y[:, :1])], -1).softmax(-1)
         position = (self.triangles[facet]*bary[:, :, None]).sum(1)

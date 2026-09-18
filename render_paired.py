@@ -40,13 +40,15 @@ def run(command, log):
 
 def render_task(job):
     (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
-     logs, split, rfilter, deterministic) = job
+     logs, split, rfilter, deterministic, oracle) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
                '--scene_depth', scene_depth, '--rfilter', rfilter]
     if deterministic:
         command.append('--deterministic_exit')
+    if oracle and mode == 'neural':
+        command.append('--oracle_facet')
     if split:
         command.append('--split_components')
     run(command, logs/('render_%s_s%s.log' % (mode, seed)))
@@ -77,6 +79,10 @@ def main():
                         help='Film reconstruction filter, applied to both modes so the '
                              'comparison stays paired. Gaussian looks cleaner but '
                              'correlates neighbouring pixels.')
+    parser.add_argument('--oracle_facet', action='store_true',
+                        help='Neural renders take the exit facet and escape decision '
+                             'from the analytic trace; an upper bound isolating branch '
+                             'selection, not a usable renderer.')
     parser.add_argument('--deterministic_exit', action='store_true',
                         help='Decode learned exits at the mixture component mean, '
                              'keeping the discrete branch structure but removing '
@@ -108,7 +114,8 @@ def main():
             directories[mode].append(directory)
             jobs.append((directory, args.model, mode, args.azimuth, seed,
                          args.width, args.height, args.spp, args.scene_depth, logs,
-                         args.split_components, args.rfilter, args.deterministic_exit))
+                         args.split_components, args.rfilter, args.deterministic_exit,
+                         args.oracle_facet))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -137,6 +144,7 @@ def main():
                    seeds=args.seeds, effective_spp=effective,
                    modes=args.modes, workers=args.workers, rfilter=args.rfilter,
                    deterministic_exit=args.deterministic_exit,
+                   oracle_facet=args.oracle_facet,
                    render_seconds=render_seconds, merged=merged,
                    result_images={m: str(p) for m, p in results.items()},
                    note='Per-seed renders under <mode>/s<seed>/ are ingredients at '

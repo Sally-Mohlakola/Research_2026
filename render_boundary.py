@@ -74,27 +74,34 @@ def eta_at(wavelength, metadata):
 
 
 def analytic_exit(first, stone, eta, max_depth, rng):
+    """Trace the true interior journey. Returns (ray, weight, status, facet).
+
+    `facet` is the triangle the path finally refracted through, or None when it
+    never escaped. It is what --oracle_facet feeds the learned decoder.
+    """
     _, ct, _, eta_ti = mi.fresnel(float(first.wi.z), eta)
     ray = first.spawn_ray(dr.normalize(first.to_world(mi.refract(first.wi, ct, eta_ti))))
     weight = float(eta_ti)**2
     for _ in range(1, max_depth):
         si = stone.ray_intersect(ray)
         if not si.is_valid() or si.wi.z >= 0:
-            return None, 0., 'invalid'
+            return None, 0., 'invalid', None
         f, ct, _, eta_ti = mi.fresnel(float(si.wi.z), eta)
         if rng.random() < f:
             ray = si.spawn_ray(dr.normalize(si.to_world(mi.reflect(si.wi))))
         else:
+            facet = int(si.prim_index)
             ray = si.spawn_ray(dr.normalize(si.to_world(mi.refract(si.wi, ct, eta_ti))))
             if stone.ray_test(ray):
-                return None, 0., 'invalid'
-            return ray, weight*float(eta_ti)**2, 'escaped'
-    return None, 0., 'truncated'
+                return None, 0., 'invalid', None
+            return ray, weight*float(eta_ti)**2, 'escaped', facet
+    return None, 0., 'truncated', None
 
 
 def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
            mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25,
-           stratify_wavelength=False, rotation=None, deterministic_exit=False):
+           stratify_wavelength=False, rotation=None, deterministic_exit=False,
+           oracle_facet=False):
     rng = np.random.default_rng(seed)
     generator = torch.Generator().manual_seed(seed)
     forward_rotation = None if rotation is None else np.asarray(rotation, dtype=np.float64)
@@ -129,7 +136,7 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
             states.append([pixel, ray, beta, mi.Spectrum(0.), False])
         active = states
         for step in range(scene_depth):
-            next_active, pending, features = [], [], []
+            next_active, pending, features, oracle = [], [], [], []
             for state in active:
                 pixel, ray, beta, radiance = state[:4]
                 si = scene.ray_intersect(ray)
@@ -154,7 +161,7 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                         state[1] = si.spawn_ray(dr.normalize(si.to_world(mi.reflect(si.wi))))
                         next_active.append(state)
                     elif mode == 'analytic':
-                        out, weight, status = analytic_exit(si, stone, eta, metadata['max_depth'], rng)
+                        out, weight, status, _ = analytic_exit(si, stone, eta, metadata['max_depth'], rng)
                         stats['analytic_'+status] += 1
                         if out is not None:
                             state[1], state[2] = out, beta*weight
@@ -175,6 +182,13 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                         features.append(list(p_q/checkpoint['input_radius'])+
                                         list(d_q)+list(n_q)+[(float(ray.wavelengths[0])-595)/235])
                         pending.append(state)
+                        if oracle_facet:
+                            # Trace the true journey purely to learn which
+                            # facet it left through. Its geometry is discarded;
+                            # only the branch label reaches the model.
+                            _, _, status, true_facet = analytic_exit(
+                                si, stone, eta, metadata['max_depth'], rng)
+                            oracle.append((status == 'escaped', true_facet or 0))
                 else:
                     bs, weight = si.bsdf().sample(mi.BSDFContext(), si, float(rng.random()),
                                                 mi.Point2f(*rng.random(2)))
@@ -183,9 +197,18 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                         next_active.append(state)
             if pending:
                 inputs = torch.tensor(features, dtype=torch.float32)
+                forced = (torch.tensor([f for _, f in oracle], dtype=torch.long)
+                          if oracle_facet else None)
                 if prior is None:
                     prediction = model.sample(inputs, generator,
-                                              deterministic=deterministic_exit)
+                                              deterministic=deterministic_exit,
+                                              facet=forced)
+                    if oracle_facet:
+                        # The oracle owns both discrete decisions, escape and
+                        # branch; the network is left with the continuous
+                        # coordinates inside the facet it is handed.
+                        prediction['escaped'] = torch.tensor([e for e, _ in oracle])
+                        prediction['throughput'] = prediction['escaped'].float()
                 else:
                     from neural.boundary_prior import sample_mixture
                     prediction = sample_mixture(model, prior, inputs, prior_fraction, generator)
@@ -253,6 +276,12 @@ def main():
                              'then Z, leaving camera, lights and ground fixed. '
                              'Matches the convention eval.py animates with. Model '
                              'queries are mapped into object space automatically.')
+    parser.add_argument('--oracle_facet', action='store_true',
+                        help='Neural mode only. Take the exit facet and the escape '
+                             'decision from the analytic trace and leave the network '
+                             'only the coordinates within that facet. This is an upper '
+                             'bound, not a renderer: it measures how much of the gap to '
+                             'the reference is branch selection alone.')
     parser.add_argument('--deterministic_exit', action='store_true',
                         help='Decode each learned exit at its mixture component '
                              'mean instead of sampling the Gaussian spread. The '
@@ -308,7 +337,8 @@ def main():
     begin = time.perf_counter()
     image, stats, components = render(scene,stone,mesh,model,checkpoint,args.width,args.height,args.spp,args.seed,
                           args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction,
-                          args.stratify_wavelength,rotation,args.deterministic_exit)
+                          args.stratify_wavelength,rotation,args.deterministic_exit,
+                          args.oracle_facet)
     if not np.isfinite(image).all():
         raise RuntimeError('Nonfinite render')
     frames = args.output_dir/'frames'
@@ -325,6 +355,7 @@ def main():
                   azimuth=args.azimuth,rfilter=args.rfilter,
                   rotation_deg=args.rotation_deg,
                   deterministic_exit=args.deterministic_exit,
+                  oracle_facet=args.oracle_facet,
                   stratify_wavelength=args.stratify_wavelength,
                   internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
                   stats=stats,geometry_sha256=m['geometry_sha256'],
