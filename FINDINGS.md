@@ -9,6 +9,19 @@ specular media, where the fine structure *is* the appearance?
 Answer: no. Three assumptions of the source method fail to transfer, and the
 dominant one is measurable.
 
+The failure is not a shortage of data, capacity or training coverage — each is
+excluded below by measurement. It has two parts. The model picks the wrong exit
+facet 59 percent of the time, and even when handed the correct facet it places
+the exit 24.66 degrees from the truth. Supplying the branch for free restores
+the stone's sparkle almost exactly, contrast 3.734 against a reference 3.744,
+while spatial agreement *falls* to 0.041 — so sharpness and correctness are
+separate axes, and this document previously conflated them.
+
+A nearest-neighbour lookup over a million training paths scores 0.2869 on the
+same branch problem against the trained model's 0.4103. The network already
+exceeds what local interpolation can do, which locates the limit in the
+representation rather than in the data.
+
 ## What does not transfer
 
 Source: Soh and Montazeri, *Neural Appearance Model for Cloth Rendering*, CGF
@@ -23,6 +36,20 @@ Source: Soh and Montazeri, *Neural Appearance Model for Cloth Rendering*, CGF
 The second was diagnosed and fixed by this project: the boundary model conditions
 on object-space position, facet, direction and wavelength, and predicts an exit
 *position* as well as a direction. The first and third were inherited untested.
+
+That diagnosis is now measured rather than argued. Building lookup tables from
+real transport and asking each to predict the exit facet on held-out data:
+
+| conditioning | cells | exit-facet top-1 |
+| --- | --- | --- |
+| trivial, most common facet | — | 0.0465 |
+| entry **direction** only, as the RDM does | 32 | 0.0682 |
+| entry **facet**, a proxy for position | 64 | 0.1918 |
+
+Direction alone is barely above the trivial baseline; position carries roughly
+three times as much. The RDM does not condition on the variable that determines
+where light leaves this geometry, which is the whole motivation for the
+generalisation.
 
 The third matters independently of whether the model works: with roughly an order
 of magnitude less transport to compress, and a network query costing more than a
@@ -97,6 +124,22 @@ This is the difference between window glass and frosted glass: the same light is
 transmitted, the direction information is destroyed. The learned operator is
 translucent; the transport it replaces is transparent.
 
+**Spread is not error.** The table above compares the dispersion of exit
+directions about their own mean. It does not measure how far the model's exits
+are from the *correct* exits, and those are different quantities. Feeding each
+head the true exit facet, so that only the within-facet decode is its own:
+
+| head | exit-direction error given the true facet |
+| --- | --- |
+| behaviour clone | mean **24.66 degrees**, median 18.23, p90 54.48 |
+| mixture | mean **32.51 degrees**, median 22.14, p90 79.36 |
+| nearest-neighbour lookup, no training | mean **8.87 degrees** |
+
+The clone has 0.00 degrees of within-facet spread and is still 24.66 degrees
+wrong. Zero spread is not accuracy. This measurement was absent from earlier
+versions of this document, and its absence supported a single-cause reading of
+the failure that the next section retracts.
+
 The architecture is not hard-limited here. `log_std` is clamped at -4, permitting
 roughly one degree of spread. The model learned 26 degrees instead, because four
 Gaussian components must cover a branch structure they cannot otherwise
@@ -123,7 +166,7 @@ A 26 degree cone does not straddle edges; it averages over many at once.
 The information is therefore present in the model and discarded by the
 representation, which is a stronger statement than a failure to learn dispersion.
 
-### One defect accounts for the whole appearance
+### Blur accounts for the missing sparkle, but not for the wrong image
 
 Every optical signature distinguishing a diamond from ordinary glass requires
 angular coherence finer than the measured blur:
@@ -136,8 +179,31 @@ angular coherence finer than the measured blur:
 
 A brilliant cut is an engineering design that presupposes coherent transport.
 Supplied with an operator that blurs by 26 degrees, the cut stops functioning and
-the facets become decorative geometry rather than optical elements. The rendered
-stone reads as frosted glass: transmitting, but not transparent.
+the facets become decorative geometry rather than optical elements.
+
+**An earlier version of this document claimed blur was the single cause. Three
+experiments show it is not.** Each removed or bypassed the blur, and none
+recovered the image:
+
+| configuration | within-facet blur | contrast | correlation with reference |
+| --- | --- | --- | --- |
+| reference | — | 3.744 | floor 0.976 |
+| mixture, as trained | 25.98 deg | 0.847 | **0.174** |
+| deterministic decode | 8.09 deg | 1.018 | 0.153 |
+| behaviour cloning | 0.00 deg | 0.847 | 0.174 at best on operator metrics, worse on the image |
+| oracle facet: true branch, learned coordinates | — | **3.734** | **0.041** |
+
+The last row is decisive. Handed the correct branch, the render reproduces the
+reference's contrast almost exactly, 3.734 against 3.744, and its peak-over-mean
+reaches 114.7 against 121.1. The sparkle returns in full. Correlation
+nonetheless *falls* to 0.041, and the operator component to 0.017.
+
+So blur and correctness are separate axes. Blur suppresses the high-dynamic-range
+structure, and removing it restores that structure; but the light is then placed
+sharply in the wrong locations. Correlation partly rewards diffuse overlap, which
+is why the blurred render scores higher than the sharp one. The rendered stone
+reads as frosted glass because of the blur, and reads as the *wrong* stone for a
+different reason.
 
 ### The image did not follow
 
@@ -242,7 +308,7 @@ structure, and variation *within* a pixel, which is Monte Carlo noise:
 The learned operator delivers 7.4x less usable image at matched sample cost,
 decomposing as 4.8x less signal multiplied by 1.55x more noise.
 
-This is the single clearest statement of the result. The operator does not
+This is the clearest statement of the *blur's* consequence. The operator does not
 destroy the environment's angular structure; it relocates that structure out of
 image contrast and into per-sample variance. Milkiness and noise are therefore
 not two problems but one, which is why they have tracked together across every
@@ -256,10 +322,95 @@ firefly regime: rare extreme samples in every pixel, each carrying a single
 saturated wavelength. The sparks introduced to create fire are what the broad
 density converts into speckle.
 
+### The failure has two parts
+
+| component | measured | reference |
+| --- | --- | --- |
+| branch selection | exit-facet top-1 **0.4084** | 1.0 |
+| within-facet decode | **24.66 degrees** error given the true facet | 8.87 for a nearest-neighbour lookup |
+
+Neither alone explains the image. Supplying the branch for free leaves
+correlation at 0.041; driving within-facet spread to zero by behaviour cloning
+leaves the image no better. Every earlier single-cause account in this document
+should be read as superseded by this table.
+
+### Local interpolation is not the ceiling
+
+A nearest-neighbour oracle over the training pool answers a question no
+architecture experiment can: is the exit predictable from this conditioning at
+all? For each held-out entry state, take the exits of the most similar training
+entries. No training, no capacity limit, no extrapolation.
+
+| predictor | exit-facet top-1 |
+| --- | --- |
+| trivial, most common facet | 0.0465 |
+| nearest-neighbour oracle, 1,046,359 training paths | 0.2869 |
+| oracle, majority vote over 8 neighbours | 0.3428 |
+| trained clone | **0.4103** |
+
+**The trained network beats the oracle by 42 percent.** Local interpolation over
+a million paths is not the ceiling, so the model is not merely failing to
+interpolate a well-covered manifold. Combined with the exclusion of data volume
+and capacity, this points at representation and input encoding.
+
+Why interpolation fails is visible in the neighbourhoods. The true facet is
+absent from the eight nearest neighbours 61 percent of the time; the median
+nearest-neighbour distance corresponds to about **4.7 degrees** of entry
+direction; and eight near-identical entry states span a median of **two distinct
+exit facets**, with all eight agreeing for only 18.6 percent of queries. The
+branch boundary is high-frequency relative to any achievable sampling density,
+and closing that gap by brute force would scale as the tenth power of the
+resolution.
+
+One conditional is encouraging: when the oracle gets the facet right, its exit
+direction is within **8.87 degrees**. Within a branch the map is smooth and
+nearly free. Across branches it is not.
+
+### The RDM does not help in either available role
+
+The source method's radiance distribution map was tested in both roles the
+architecture permits.
+
+**As an importance-sampling proposal.** The mixture weight is `p_neural / q`, so
+the estimator targets the learned model by construction and the RDM cannot
+change accuracy, only variance. Four matched seeds per arm, current checkpoint,
+160x160 at 16 spp, 25,600 lit pixels:
+
+| | prior on | prior off |
+| --- | --- | --- |
+| mean luminance | 0.002596 | 0.002594 |
+| per-pixel variance | 4.105e-05 | 3.122e-05 |
+| seconds | 29.6 | 24.3 |
+
+**Variance ratio 1.315 at equal samples, 1.603 at equal time.** The means agree
+to +0.10 percent, which is the weighting behaving correctly: the same expected
+image, a worse estimator. This supersedes an earlier two-seed 64x64 figure of
+1.202, measured on a pilot checkpoint that no reported result uses.
+
+**As a branch prior.** Combining the RDM's facet distribution with the model's
+posterior, against a clone baseline of 0.4103:
+
+| RDM conditioning | cells | RDM alone | best blend |
+| --- | --- | --- | --- |
+| entry direction only, as built | 32 | 0.0682 | 0.4094 |
+| entry facet | 64 | 0.1918 | 0.4103 |
+| entry facet x direction, 8x16 | 8,192 | 0.2594 | **0.4135** |
+
+The ceiling is **+0.003**, and the RDM as currently conditioned makes the model
+worse. One explanation covers both roles: the RDM is a marginal of the same
+conditioning the network already reads, so it cannot carry information the
+network lacks.
+
+**No result in this document uses the RDM.** All evaluated renders record
+`rdm_prior: None`, and `render_paired.py` does not expose the option. The RDM is
+this project's ancestor and its baseline, not a component of its method.
+
 ## Mechanism
 
 The broadening that erases flashes and the broadening that raises variance are
-one defect, seen in the mean and in the variance.
+one defect, seen in the mean and in the variance. This section explains that
+defect. It is one of the two identified above, and it is not the one that puts
+the light in the wrong place.
 
 Each camera sample entering the stone draws an exit triangle from a 64-way
 categorical, a component from a Gaussian mixture, then Gaussian samples for exit
@@ -293,11 +444,24 @@ radiance are connected through the *joint* exit position and direction; the
 mixture scores well on the marginals while blurring the joint structure that
 determines where light lands.
 
+**This mechanism is necessary but not sufficient.** It explains the milkiness,
+the absent fire and the absent scintillation, all of which follow from a broad
+exit cone averaging a structured environment into a constant one. It does not
+explain why the image remains wrong once the cone is narrowed. The oracle-facet
+render has a narrow cone and correct branches and still correlates at 0.041,
+so a second mechanism is at work: the learned exit lands 24.66 degrees from the
+truth even within the correct facet, which relocates light without broadening
+it. Milkiness and misplacement are distinct failures with distinct causes, and
+only the first is explained here.
+
 ## Not established
 
-- **Coverage is not excluded.** The conditioning is at least 5D and 65,536 entry
-  states is roughly nine samples per dimension. Whether this is a representational
-  limit or extrapolation beyond the training manifold is untested.
+- **Coverage is now partly excluded.** The nearest-neighbour oracle answers the
+  interpolation half: with 1,046,359 training paths it reaches 0.2869 against the
+  trained model's 0.4103, so the model is not failing to interpolate a covered
+  manifold, and more data of this kind would not close the gap. What remains
+  untested is whether a *different* conditioning, rather than more of this one,
+  would make the exit predictable.
 - **The claim's scope is undefended.** Without a mixture-component sweep,
   "smooth densities cannot" narrows to "four Gaussians cannot".
 - **One view, one lighting rig.** One azimuth at high resolution, fifteen at
@@ -325,6 +489,17 @@ determines where light lands.
 | component split | same, `components` block |
 | scintillation sweep | `renders/flash_scaled_01/flash_sweep.json` |
 | cost and noise | `renders/flash_hires_*/s*/render.json` |
+| deterministic decode | `renders/det_exit/evaluation.json` |
+| oracle facet | `renders/oracle_facet/evaluation.json` |
+| within-facet decode error | `oracle_boundary.py` conditioning path, `checkpoints/camera_pool/test.npz` |
+| nearest-neighbour oracle | `checkpoints/camera_model/oracle.json` |
+| RDM as branch prior | tables built from `checkpoints/camera_pool/train.npz`, evaluated on `test.npz` |
+| RDM variance ratio | four matched seeds per arm, `checkpoints/step_transfer`, 160x160 at 16 spp |
+| cross-cut ablation | `renders/pear_comparison.png`, `checkpoints/pear_model/test_metrics.json` |
+
+Claims revised on 18 September 2026 are listed with their replacements in
+`CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis
+scripts not yet committed; see `CODE_FREEZE.md` item 1.
 
 Training pool: 1,048,576 records from 65,536 entry states (seed 101). Test pool:
 262,144 records from 16,384 entry states (seed 202). Geometry
