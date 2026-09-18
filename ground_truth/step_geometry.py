@@ -1,21 +1,28 @@
 """Step cut (emerald cut) geometry, matching make_round_brilliant's conventions.
 
+Built to the standard trade diagram: an octagonal outline, concentric
+rectangular step facets on both crown and pavilion, and a small flat CULET
+facet at the bottom.
+
 A step cut differs from a brilliant in two structural ways, and both matter to
 a transport model rather than only to the eye.
 
 The outline is an octagon -- a rectangle with chamfered corners -- instead of a
-circle or a teardrop, so the stone has four long parallel facet runs rather
-than a ring of small triangular facets.
+circle or a teardrop, so the stone has four long parallel facet runs and four
+corner runs rather than a ring of small triangular facets.
 
-The pavilion converges to a KEEL LINE, not to a point. Every other generator
-here ends the pavilion at a single apex, so the closure below the last ring is
-the one piece of topology a step cut cannot borrow from them: eight ring
-vertices reduce to a two-vertex ridge, six triangles and two quads.
-
-Facets are arranged in concentric steps. Real step cuts vary the angle from one
-step to the next -- steepest at the girdle on the crown, steepest at the keel on
+The facets are concentric terraces. Real step cuts vary the angle from one step
+to the next -- steepest at the girdle on the crown, steepest at the culet on
 the pavilion -- and without that variation adjacent bands would be coplanar and
-the cut would read as a plain frustum. `step_angle_spread` controls it.
+the cut would read as a plain frustum. `step_angle_spread` controls it, and
+the default is deliberately small: on a real step cut the terraces show as
+lines on the face, not as bends in the silhouette. At 0.06 the mesh keeps 50
+distinct facet planes with a straight-sided profile; at 0 it collapses to 18
+and becomes a frustum, and at 0.35 the pavilion visibly funnels.
+
+The pavilion tapers through its steps to a flat culet rather than to a point,
+which is the same arrangement `make_round_brilliant` uses for `culet_radius`:
+a small ring capped by a fan around a centre vertex, lying in one plane.
 
 Overall proportions are held to the same envelope as the other cuts: the same
 girdle radius, the same nominal crown height and pavilion depth from
@@ -25,7 +32,7 @@ which is what makes a cross-cut comparison a controlled one.
 import numpy as np
 
 
-def step_outline(length_ratio=1.35, corner_frac=0.18):
+def step_outline(length_ratio=1.35, corner_frac=0.20):
     """Octagonal girdle outline, normalised so the maximum radius is 1.
 
     A rectangle of half-extents (length_ratio, 1) with each corner chamfered by
@@ -68,9 +75,9 @@ def _cumulative(scales, angles, mean_radius, target):
 
 
 def make_step_cut(girdle_radius=1.0, crown_angle_deg=34.5, pavilion_angle_deg=40.75,
-                  table_frac=0.56, length_ratio=1.35, corner_frac=0.18,
-                  crown_steps=3, pavilion_steps=3, keel_ring_frac=0.30,
-                  keel_length_frac=0.18, step_angle_spread=0.35):
+                  table_frac=0.56, length_ratio=1.35, corner_frac=0.20,
+                  crown_steps=3, pavilion_steps=3, culet_frac=0.15,
+                  step_angle_spread=0.06):
     """Watertight step cut as (vertices, faces).
 
     `crown_steps` and `pavilion_steps` set the tessellation the way
@@ -78,13 +85,18 @@ def make_step_cut(girdle_radius=1.0, crown_angle_deg=34.5, pavilion_angle_deg=40
     8*(crown_steps+pavilion_steps+1)+2 vertices and
     16*(crown_steps+pavilion_steps)+16 faces, so crown_steps+pavilion_steps == 3
     reproduces the round brilliant's 34 vertices and 64 faces exactly.
+
+    `culet_frac` is the culet's width as a fraction of the girdle outline. It
+    plays the role `culet_radius` plays for the round cut, but it cannot be
+    zero here: collapsing the bottom ring to a point would change the face
+    count and break the tessellation contract above.
     """
     if crown_steps < 1 or pavilion_steps < 1:
         raise ValueError('crown_steps and pavilion_steps must be at least one')
     if not 0. < table_frac < 1.:
         raise ValueError('table_frac must lie strictly between zero and one')
-    if not 0. < keel_ring_frac < 1.:
-        raise ValueError('keel_ring_frac must lie strictly between zero and one')
+    if not 0. < culet_frac < 1.:
+        raise ValueError('culet_frac must lie strictly between zero and one')
     if step_angle_spread < 0. or step_angle_spread >= 1.:
         raise ValueError('step_angle_spread must lie in [0, 1)')
 
@@ -101,11 +113,10 @@ def make_step_cut(girdle_radius=1.0, crown_angle_deg=34.5, pavilion_angle_deg=40
                                 _band_angles(crown_angle_deg, crown_steps,
                                              step_angle_spread, True),
                                 mean_radius, crown_height)
-    # Pavilion: girdle down through the rings and on to the keel, which is the
-    # scale-zero end of the same run, so the keel drop obeys the progression.
-    pavilion_scales = np.concatenate([np.linspace(1., keel_ring_frac, pavilion_steps+1), [0.]])
+    # Pavilion: girdle down to the culet ring, steepest step at the culet.
+    pavilion_scales = np.linspace(1., culet_frac, pavilion_steps+1)
     pavilion_heights = _cumulative(pavilion_scales,
-                                   _band_angles(pavilion_angle_deg, pavilion_steps+1,
+                                   _band_angles(pavilion_angle_deg, pavilion_steps,
                                                 step_angle_spread, False),
                                    mean_radius, pavilion_depth)
 
@@ -113,7 +124,8 @@ def make_step_cut(girdle_radius=1.0, crown_angle_deg=34.5, pavilion_angle_deg=40
         return np.column_stack([centroid+scale*(outline-centroid),
                                 np.full(sides, height)])
 
-    # Rings run top to bottom: table, crown intermediates, girdle, pavilion.
+    # Rings run top to bottom: table, crown intermediates, girdle, pavilion,
+    # with the last pavilion ring being the culet.
     rings = [ring(table_frac, crown_height)]
     for k in range(crown_steps-1, 0, -1):
         rings.append(ring(crown_scales[k], crown_heights[k-1]))
@@ -121,37 +133,25 @@ def make_step_cut(girdle_radius=1.0, crown_angle_deg=34.5, pavilion_angle_deg=40
     for i in range(pavilion_steps):
         rings.append(ring(pavilion_scales[i+1], -pavilion_heights[i]))
 
-    extent = float(np.abs(outline[:, 0]).max())
-    keel_half = keel_length_frac*extent
-    if keel_half >= keel_ring_frac*extent:
-        raise ValueError('keel_length_frac must be smaller than keel_ring_frac')
-    keel = np.array([[keel_half, centroid[1], -pavilion_depth],
-                     [-keel_half, centroid[1], -pavilion_depth]])
-
-    vertices = np.vstack(rings+[keel]).astype(np.float32)
-    last = (len(rings)-1)*sides
-    plus, minus = len(rings)*sides, len(rings)*sides+1
+    # Flat caps get a centre vertex so table and culet are fans rather than
+    # polygon triangulations, matching make_round_brilliant.
+    table_centre = np.array([[centroid[0], centroid[1], crown_height]])
+    culet_centre = np.array([[centroid[0], centroid[1], -pavilion_depth]])
+    vertices = np.vstack(rings+[table_centre, culet_centre]).astype(np.float32)
+    culet_base = (len(rings)-1)*sides
+    table_apex, culet_apex = len(rings)*sides, len(rings)*sides+1
 
     faces = []
-    for i in range(1, sides-1):                     # table cap, fanned
-        faces.append([0, i, i+1])
+    for i in range(sides):                          # table cap
+        faces.append([table_apex, i, (i+1) % sides])
     for r in range(len(rings)-1):                   # step bands
         upper, lower = r*sides, (r+1)*sides
         for i in range(sides):
             j = (i+1) % sides
             faces.append([upper+i, upper+j, lower+j])
             faces.append([upper+i, lower+j, lower+i])
-    # Keel closure: each ring vertex belongs to the nearer keel end, so an edge
-    # whose ends agree spans a triangle and an edge that straddles spans a quad.
-    side = [plus if point[0] >= centroid[0] else minus for point in outline]
-    for i in range(sides):
-        j = (i+1) % sides
-        a, b = last+i, last+j
-        if side[i] == side[j]:
-            faces.append([a, b, side[i]])
-        else:
-            faces.append([a, b, side[j]])
-            faces.append([a, side[j], side[i]])
+    for i in range(sides):                          # culet cap
+        faces.append([culet_apex, culet_base+i, culet_base+(i+1) % sides])
     faces = np.array(faces, dtype=np.uint32)
 
     centre = vertices.mean(axis=0)
