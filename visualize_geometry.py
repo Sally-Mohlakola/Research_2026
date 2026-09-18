@@ -19,8 +19,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from ground_truth.brilliant_geometry import make_round_brilliant
+from ground_truth.cuts import make_diamond
 from ground_truth.pear_geometry import make_pear_brilliant
+from ground_truth.step_geometry import make_step_cut
 from config.parameters import DIAMOND_VARIANTS
 
 LIGHT = np.array([0.4, 0.5, 0.75])
@@ -71,9 +72,9 @@ def main():
     views = [(22, -60, 'three-quarter'), (88, -90, 'top (table)'), (2, -90, 'side (profile)')]
     meshes = []
     for name in DIAMOND_VARIANTS:
-        geometry = {k: v for k, v in DIAMOND_VARIANTS[name].items()
-                    if k not in ('int_ior', 'ext_ior')}
-        meshes.append((name, make_round_brilliant(**geometry)))
+        # Dispatch on the variant's 'cut' key; round, pear and step cuts all
+        # live in DIAMOND_VARIANTS now, so a single generator will not do.
+        meshes.append((name, make_diamond(DIAMOND_VARIANTS[name])))
     if args.pear:
         for points in args.pear:
             meshes.append(('pear_brilliant (n=%d)' % points,

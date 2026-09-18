@@ -8,4 +8,9 @@ checkpoints/
 __pycache__/
 *.pyc
 
-ground_truth/
+# Bulk artefacts under ground_truth. The geometry generators and their
+# validation figures are source and stay tracked; only heavy outputs are
+# ignored here. A blanket ground_truth/ rule used to hide every generator,
+# which is how the pear and step cut files came to be untracked.
+ground_truth/diamond_animation/
+ground_truth/*.ply

@@ -56,6 +56,33 @@ PEAR_DEFAULTS = {
 DIAMOND_VARIANTS["pear_brilliant"] = PEAR_DEFAULTS
 
 
+STEP_DEFAULTS = {
+    "cut": "step",
+    "girdle_radius": 1.0,
+    "crown_angle_deg": 34.5,
+    "pavilion_angle_deg": 40.75,
+    "table_frac": 0.56,
+    "length_ratio": 1.35,
+    "corner_frac": 0.18,
+    "crown_steps": 3,
+    "pavilion_steps": 3,
+    "keel_ring_frac": 0.30,
+    "keel_length_frac": 0.18,
+    "step_angle_spread": 0.35,
+    "int_ior": 2.419,
+    "ext_ior": 1.000277,
+}
+DIAMOND_VARIANTS["step_cut"] = STEP_DEFAULTS
+
+# Same cut at the one tessellation that lands on exactly 34 vertices and 64
+# triangles, matching round_diamond_gia. Face counts are 16*(crown+pavilion)+16,
+# so crown_steps+pavilion_steps == 3 is the only way to hit 64. This variant
+# exists so a round-trained operator can be re-pointed at step geometry without
+# changing the size of its facet categorical: the transfer experiment needs the
+# head shapes to agree, and 2+1 keeps a genuinely stepped crown while doing so.
+DIAMOND_VARIANTS["step_cut_matched"] = dict(STEP_DEFAULTS, crown_steps=2, pavilion_steps=1)
+
+
 def get_diamond_parameters(name: str) -> dict:
     if name not in DIAMOND_VARIANTS:
         valid = ", ".join(sorted(DIAMOND_VARIANTS.keys()))
