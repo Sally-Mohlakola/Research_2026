@@ -166,6 +166,11 @@ A 26 degree cone does not straddle edges; it averages over many at once.
 The information is therefore present in the model and discarded by the
 representation, which is a stronger statement than a failure to learn dispersion.
 
+The conditioning ablation below sharpens this further: removing the wavelength
+input altogether costs 0.0004 of branch accuracy and 0.08 degrees of exit
+angle. The learned dependence is real but worth almost nothing against the
+model's own error, so the input is effectively free to discard.
+
 ### Blur accounts for the missing sparkle, but not for the wrong image
 
 Every optical signature distinguishing a diamond from ordinary glass requires
@@ -321,6 +326,57 @@ every pixel has some probability of catching one on any sample, which is the
 firefly regime: rare extreme samples in every pixel, each carrying a single
 saturated wavelength. The sparks introduced to create fire are what the broad
 density converts into speckle.
+
+### The operator needs position, and does not need wavelength
+
+Each input group removed from the network by zeroing its slice, so the
+architecture, parameter count and optimisation are identical across arms and a
+difference is a difference in information rather than capacity. One budget, one
+seed, one entry-grouped split; 60 epochs on 838,736 training records from
+52,422 entry states, evaluated on 261,447 held-out escaped records.
+
+| arm | exit-facet top-1 | vs full | exit angle given the true facet |
+| --- | --- | --- | --- |
+| full | **0.4042** | — | 24.68 deg |
+| no wavelength | 0.4039 | -0.0004 | 24.76 deg |
+| no normal | 0.3662 | -0.0380 | 25.88 deg |
+| no position | 0.2732 | -0.1311 | 25.54 deg |
+| no direction | 0.2010 | -0.2032 | 29.15 deg |
+| **direction only** | **0.1167** | **-0.2875** | 30.41 deg |
+
+**The last row is the direct test of this project's central design decision.**
+Given only what the RDM is conditioned on, the network scores 0.1167; given
+position and normal as well, it scores 0.4042. Spatial conditioning is worth a
+factor of 3.5 on branch selection, measured on the network itself rather than
+inferred from lookup tables.
+
+Position and normal are partially redundant, and the ablation quantifies it.
+Dropping either alone costs 0.131 and 0.038, but dropping both together with
+wavelength costs 0.288 -- far more than the sum. The normal identifies which of
+64 facets was entered and position implies the same thing plus where on it, so
+each covers for the other. Only the direction-only arm measures the true cost of
+removing spatial information, and single-drop arms understate it.
+
+Direction is not unimportant: removing it costs 0.203. The ordering is what
+matters. Spatial conditioning costs more than direction, which is the claim the
+RDM's angle-only formulation gets backwards for this geometry.
+
+**Wavelength contributes nothing measurable**: -0.0004 on branch selection and
++0.08 degrees on the exit angle. This sharpens the dispersion result above. The
+model does learn a wavelength dependence, and that dependence is worth 0.08
+degrees against its own 24.68 degree error, so removing the input entirely is
+free. Dispersion is not merely destroyed downstream by the blur; it never
+contributes to predictive accuracy in the first place.
+
+The exit-angle column moves far less than the facet column, staying between
+24.68 and 25.88 degrees for every arm that keeps a spatial input and reaching
+only 30.41 degrees for the most crippled one. The within-facet decode is broken
+at roughly 25 degrees almost regardless of conditioning, which is independent
+support for treating it as a separate problem from branch selection.
+
+Consistency check: the direction-only network reaches 0.1167 against the
+direction-only lookup table's 0.0682. The network extracts 1.7 times more from
+the same inputs than a table can, matching the pattern in the oracle result.
 
 ### The failure has two parts
 
@@ -496,6 +552,7 @@ only the first is explained here.
 | RDM as branch prior | tables built from `checkpoints/camera_pool/train.npz`, evaluated on `test.npz` |
 | RDM variance ratio | four matched seeds per arm, `checkpoints/step_transfer`, 160x160 at 16 spp |
 | cross-cut ablation | `renders/pear_comparison.png`, `checkpoints/pear_model/test_metrics.json` |
+| conditioning ablation | `checkpoints/camera_model/conditioning_ablation.json`, via `ablate_conditioning.py` |
 
 Claims revised on 18 September 2026 are listed with their replacements in
 `CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis
