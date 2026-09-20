@@ -247,7 +247,70 @@ class BoundaryCloneModel(nn.Module):
                     throughput=escaped.float())
 
 
-HEADS = {'mixture': BoundaryModel, 'clone': BoundaryCloneModel}
+class BoundaryDeepCloneModel(BoundaryCloneModel):
+    """Behavioural cloning with the coordinate head that the sweep selected.
+
+    Two changes against BoundaryCloneModel, both confined to the within-facet
+    decode: the regressor is four layers instead of two, and it reads its own
+    trunk rather than the one shared with the escape and facet heads.
+
+    Measured on the round cut, 30 epochs, held-out pool, exit angle given the
+    true facet: 24.52 degrees for the shipped head, 22.04 for depth alone,
+    24.09 for a separate trunk alone, 21.61 for both. Facet accuracy is
+    unchanged at 0.394, so the gain is not bought from branch selection.
+
+    Depth is what matters and the separate trunk adds little, which is evidence
+    against the hypothesis that motivated it -- the shared trunk was not being
+    starved by the facet cross-entropy; the head was simply too shallow. Both
+    are kept because together they were best, but the honest summary is that
+    this closes 2.91 degrees of the 15.65 that separate the shipped head from a
+    nearest-neighbour lookup. The remaining gap is not a capacity problem.
+    """
+
+    DEPTH = 4
+
+    def __init__(self, vertices, faces, width=64, components=4):
+        super().__init__(vertices, faces, width, components)
+        layers, size = [], width+16
+        for _ in range(self.DEPTH-1):
+            layers += [nn.Linear(size, width), nn.SiLU()]
+            size = width
+        layers.append(nn.Linear(size, 4))
+        self.regressor = nn.Sequential(*layers)
+        self.trunk = nn.Sequential(nn.Linear(10, width), nn.SiLU(),
+                                   nn.Linear(width, width), nn.SiLU())
+
+    def losses(self, x, facet, y, escaped):
+        h = self.encoder(x)
+        escape_loss = F.binary_cross_entropy_with_logits(
+            self.escape(h).squeeze(-1), escaped.float())
+        if not escaped.any():
+            return escape_loss, escape_loss*0, escape_loss*0
+        facet_loss = F.cross_entropy(self.facet(h[escaped]), facet[escaped])
+        predicted = self.coordinates(self.trunk(x)[escaped], facet[escaped])
+        return escape_loss, facet_loss, F.smooth_l1_loss(predicted, y[escaped])
+
+    @torch.no_grad()
+    def sample(self, x, generator=None, deterministic=False, facet=None):
+        h = self.encoder(x)
+        escaped = torch.rand(len(x), device=x.device, generator=generator) < torch.sigmoid(
+            self.escape(h).squeeze(-1))
+        probability = self.facet(h).softmax(-1)
+        if facet is None:
+            facet = (probability.argmax(-1) if deterministic
+                     else torch.multinomial(probability, 1, generator=generator).squeeze(-1))
+        y = self.coordinates(self.trunk(x), facet)
+        bary = torch.cat([y[:, :2], torch.zeros_like(y[:, :1])], -1).softmax(-1)
+        position = (self.triangles[facet]*bary[:, :, None]).sum(1)
+        direction = F.normalize(self.normal[facet]+y[:, 2:3]*self.tangent[facet]
+                                + y[:, 3:4]*self.bitangent[facet], dim=-1)
+        return dict(escaped=escaped, exit_facet=facet, exit_position=position,
+                    exit_direction=direction, barycentric=bary,
+                    throughput=escaped.float())
+
+
+HEADS = {'mixture': BoundaryModel, 'clone': BoundaryCloneModel,
+         'clone_deep': BoundaryDeepCloneModel}
 
 
 def load_model(path):

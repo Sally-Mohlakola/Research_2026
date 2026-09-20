@@ -22,6 +22,13 @@ same branch problem against the trained model's 0.4103. The network already
 exceeds what local interpolation can do, which locates the limit in the
 representation rather than in the data.
 
+The most useful single result is that **operator accuracy does not transfer to
+the image**. Three separate experiments improved the operator and each made the
+render agree with the reference less: a deterministic decode, an oracle that
+supplies the true branch, and a genuinely better-trained decoder. The two error
+sources are not additive, so partial fixes move the image away from the
+reference rather than toward it.
+
 ## What does not transfer
 
 Source: Soh and Montazeri, *Neural Appearance Model for Cloth Rendering*, CGF
@@ -390,6 +397,96 @@ correlation at 0.041; driving within-facet spread to zero by behaviour cloning
 leaves the image no better. Every earlier single-cause account in this document
 should be read as superseded by this table.
 
+### The decode improves with depth, and then saturates
+
+The within-facet half had never been attacked. Two architectural suspects: the
+regressor is two layers and 5,444 parameters, and it reads a trunk trained
+jointly for escape, facet and coordinates, where the 64-way cross-entropy
+dominates the gradient. One budget, one seed, 30 epochs, held-out pool, exit
+angle given the true facet.
+
+| arm | exit angle | vs baseline | median | facet top-1 | parameters |
+| --- | --- | --- | --- | --- | --- |
+| separate trunk + depth 4 | **21.61 deg** | **-2.91** | 14.22 | 0.3941 | 28,741 |
+| depth 4 | 22.04 deg | -2.48 | 14.94 | 0.3887 | 23,877 |
+| separate trunk | 24.09 deg | -0.43 | 17.57 | 0.3955 | 20,421 |
+| coordinate loss x5 | 24.25 deg | -0.27 | 17.74 | 0.3869 | 15,557 |
+| baseline, as shipped | 24.52 deg | — | 18.19 | 0.3935 | 15,557 |
+
+Facet accuracy is unchanged across every arm, so nothing was bought by damaging
+branch selection. The median improves more than the mean -- 18.19 to 14.22, a
+22 percent cut -- while the p90 barely moves, 54.51 to 51.40, so the typical
+case improves and the tail does not.
+
+**Depth is the active ingredient and the second hypothesis was wrong.** Depth
+alone captures 2.48 of the 2.91; a separate trunk alone manages 0.43, and
+weighting the coordinate loss up does essentially nothing. The shared trunk was
+not being starved by the facet cross-entropy. The head was simply too shallow.
+
+**And it saturates well short.** The gap from the shipped head to a
+nearest-neighbour lookup is 15.65 degrees; doubling the parameters and adding a
+separate trunk closes 2.91 of it, 18.6 percent. A method with no parameters
+still beats the best architecture tried here by 2.4 times. If the head were
+merely too small, capacity would have closed more. This is independent support
+for the encoding argument: the limit is not how much the head can compute but
+what it can see.
+
+### Operator accuracy does not transfer to the image
+
+The clearest result in this project, and it took three experiments to see.
+
+| experiment | operator-level change | image correlation |
+| --- | --- | --- |
+| deterministic decode | blur 25.98 to 8.09 deg | 0.174 -> 0.153 |
+| oracle facet | branch error removed entirely | -> 0.041 |
+| improved decoder, pear cut | exit angle 37.16 to 26.25 deg, facet 0.309 to 0.337 | 0.136 -> **0.054** |
+
+Every time the operator is measurably improved, the render agrees with the
+reference *less*.
+
+The third case is the sharpest, because nothing about it is artificial: a
+genuinely better-trained operator, evaluated against the same analytic
+reference at the same four seeds. Pear cut, 128 effective spp, 90,607 stone
+pixels.
+
+| | shipped mixture | improved clone_deep | reference |
+| --- | --- | --- | --- |
+| correlation | 0.1359 | **0.0541** | floor 0.8987 |
+| operator component | 0.1225 | 0.0355 | — |
+| highlight overlap | 0.0066 | 0.0022 | floor 0.5949 |
+| relative RMSE | 1.834 | 3.795 | floor 0.684 |
+| relative energy error | +17.3% | **+47.8%** | — |
+| contrast | 0.886 | **2.315** | 1.476 |
+| peak over mean | 20.0 | 82.3 | 64.4 |
+| flash fraction | 0.00065 | 0.0077 | 0.0015 |
+
+**The improved model overshoots.** Earlier models were too flat; this one is
+too sparkly. Contrast passes the reference and keeps going, 2.315 against
+1.476, peak over mean 82.3 against 64.4, flash fraction five times too high.
+Sharpness is therefore not converging on correctness -- it is a free parameter
+that happens to be uncorrelated with accuracy.
+
+The energy result states the problem most starkly. The improved head's escape
+prediction is *more* physically correct: measured escape on the pear is 1.0 and
+it predicts 1.0, where the mixture under-escaped. Being right about escape made
+the image worse, because the extra paths land in the wrong places. The
+untouched control sits at 0.913 and 0.916 across the two runs, so the harness
+is sound and the whole difference is the operator's.
+
+**What this adds to the two-part diagnosis.** The two errors are not additive
+and cannot be fixed independently. A sharp operator placing light incorrectly
+is further from the truth than a blurred one, because blur buys accidental
+overlap with the right regions. Any partial improvement therefore moves the
+image away from the reference until branch selection and the within-facet
+decode are *both* close enough for the placement to be right. That is a
+stronger claim than "the model needs a better decoder", and three independent
+experiments support it.
+
+One caveat on the pear comparison: it is a mixture head against a clone_deep
+head at 128 spp versus the original 256, so two variables move at once. The
+effect is far too large to be either, but a plain clone arm on the pear would
+isolate it.
+
 ### Local interpolation is not the ceiling
 
 A nearest-neighbour oracle over the training pool answers a question no
@@ -553,6 +650,9 @@ only the first is explained here.
 | RDM variance ratio | four matched seeds per arm, `checkpoints/step_transfer`, 160x160 at 16 spp |
 | cross-cut ablation | `renders/pear_comparison.png`, `checkpoints/pear_model/test_metrics.json` |
 | conditioning ablation | `checkpoints/camera_model/conditioning_ablation.json`, via `ablate_conditioning.py` |
+| decoder sweep | `checkpoints/camera_model/decoder_ablation.json`, via `improve_decoder.py` |
+| improved pear render | `renders/pear_deep/evaluation.json`, model `checkpoints/pear_deep` |
+| shipped pear render | `renders/neural_pear_00/`, re-evaluated at four matched seeds |
 
 Claims revised on 18 September 2026 are listed with their replacements in
 `CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis
