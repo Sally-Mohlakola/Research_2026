@@ -185,6 +185,10 @@ def main():
     parser.add_argument('--threads', type=int, default=0)
     parser.add_argument('--save_best', type=Path,
                         help='Write the winning arm as a loadable checkpoint')
+    parser.add_argument('--resume', action='store_true',
+                        help='Skip arms already present in the output file. Results '
+                             'are written after every arm, so an interrupted sweep '
+                             'resumes instead of restarting.')
     args = parser.parse_args()
     if args.threads:
         torch.set_num_threads(args.threads)
@@ -207,8 +211,24 @@ def main():
     print('%d training records, %d held-out escaped records, %d epochs per arm\n'
           % (len(train_idx), len(test_x), args.epochs))
 
-    results, models = {}, {}
+    report = dict(epochs=args.epochs, width=args.width, lr=args.lr, seed=args.seed,
+                  train_records=len(train_idx), test_records=len(test_x),
+                  reference=dict(shipped_clone_exit_angle=24.66,
+                                 nearest_neighbour_exit_angle=8.87),
+                  arms={})
+    if args.resume and args.output.exists():
+        previous = json.loads(args.output.read_text())
+        if previous.get('epochs') == args.epochs and previous.get('seed') == args.seed:
+            report['arms'] = previous.get('arms', {})
+            print('resuming; already complete: %s\n'
+                  % (', '.join(sorted(report['arms'])) or 'nothing'))
+        else:
+            print('existing report used a different budget; starting fresh\n')
+
+    results, models = report['arms'], {}
     for name in args.arms:
+        if name in results:
+            continue
         model, seconds = train_arm(name, ARMS[name], tensors, train_idx, val_idx,
                                    vertices, faces, args)
         parameters = sum(p.numel() for p in model.parameters())
@@ -218,19 +238,15 @@ def main():
         print('  %-14s exit angle %.2f deg   facet top-1 %.4f   %d params   (%.0f s)\n'
               % (name, results[name]['exit_angle_mean'],
                  results[name]['facet_top1'], parameters, seconds), flush=True)
-
-    report = dict(epochs=args.epochs, width=args.width, lr=args.lr, seed=args.seed,
-                  train_records=len(train_idx), test_records=len(test_x),
-                  reference=dict(shipped_clone_exit_angle=24.66,
-                                 nearest_neighbour_exit_angle=8.87),
-                  arms=results)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2))
+        # Written after every arm. Four background runs were reaped for memory
+        # pressure today; a sweep that loses everything on a kill is unusable.
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2))
 
     base = results.get('baseline', {}).get('exit_angle_mean')
     print('\n%-16s %12s %10s %14s %10s' % ('arm', 'exit angle', 'vs base',
                                            'facet top-1', 'params'))
-    for name in args.arms:
+    for name in sorted(results):
         r = results[name]
         delta = ('%+.2f' % (r['exit_angle_mean']-base)) if base and name != 'baseline' else '-'
         print('%-16s %9.2f deg %10s %14.4f %10d'
@@ -238,11 +254,19 @@ def main():
     print('\nnearest-neighbour lookup reaches 8.87 deg on the same conditional')
 
     if args.save_best:
+        # The winner is the best across every arm in the report, but only arms
+        # trained in this invocation have a live model to save. With --resume
+        # that can differ, so say which rather than silently saving a runner-up.
         winner = min(results, key=lambda n: results[n]['exit_angle_mean'])
-        torch.save(dict(schema_version=1, head='clone', width=args.width,
-                        components=args.components, arm=winner,
-                        state_dict=models[winner].state_dict()), args.save_best)
-        print('saved %s (%s)' % (args.save_best, winner))
+        if winner in models:
+            args.save_best.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(dict(schema_version=1, head='clone', width=args.width,
+                            components=args.components, arm=winner,
+                            state_dict=models[winner].state_dict()), args.save_best)
+            print('saved %s (%s)' % (args.save_best, winner))
+        else:
+            print('best arm is %s, trained in an earlier invocation; re-run '
+                  'with --arms %s to save it' % (winner, winner))
     print('wrote %s' % args.output)
 
 
