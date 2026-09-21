@@ -466,6 +466,33 @@ too sparkly. Contrast passes the reference and keeps going, 2.315 against
 Sharpness is therefore not converging on correctness -- it is a free parameter
 that happens to be uncorrelated with accuracy.
 
+That overshoot is real structure, not speckle, and the check matters because
+this document establishes elsewhere that neural contrast is noise-driven and
+washes out with sampling. Contrast against sample count, same stone, same
+pixels:
+
+| | 32 spp | 64 spp | 128 spp | change |
+| --- | --- | --- | --- | --- |
+| improved clone_deep | 2.585 | 2.390 | 2.315 | **-10%** |
+| shipped mixture | 1.393 | 1.069 | 0.886 | **-36%** |
+| analytic reference | 1.564 | 1.507 | 1.476 | -6% |
+
+The shipped model's contrast was largely an artefact: it falls by more than a
+third as samples accumulate. The improved model's falls by a tenth, close to
+the analytic's own six percent, so it is converging on genuine structure.
+
+This refines the "structure is relocated into noise" result above. The improved
+decoder relocates it **back** -- apparent contrast that was noise becomes
+contrast that is structure -- and the image still gets worse, because placement
+rather than structure is what is wrong. Recovering the right amount of
+structure and recovering the right image are separate achievements, and only
+the first has happened.
+
+The difference image shows the two error modes as visually distinct. Missing
+light appears in **facet-shaped** regions, which is branch selection failing;
+added light appears in **diffuse blobs**, which is the within-facet decode
+placing exits where no facet directs them.
+
 The energy result states the problem most starkly. The improved head's escape
 prediction is *more* physically correct: measured escape on the pear is 1.0 and
 it predicts 1.0, where the mixture under-escaped. Being right about escape made
