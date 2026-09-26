@@ -91,6 +91,10 @@ def main():
     parser.add_argument('--spp', type=int, default=32)
     parser.add_argument('--scene_depth', type=int, default=8)
     parser.add_argument('--seed', type=int, default=61)
+    parser.add_argument('--resume', action='store_true',
+                        help='Continue an interrupted animation in --output_dir: '
+                             'frames already rendered are kept, half-finished ones '
+                             'are redone. Settings must match the original run.')
     parser.add_argument('--vary_seed', action='store_true',
                         help='Use a different seed per frame. Off by default: a '
                              'shared seed keeps the noise pattern stable between '
@@ -111,13 +115,23 @@ def main():
         parser.error('--frames must be at least two')
     if min(args.width, args.height, args.spp, args.scene_depth, args.workers, args.fps) < 1:
         parser.error('Dimensions, spp, depth, workers and fps must be positive')
-    if args.output_dir.exists():
-        raise FileExistsError('Refusing to replace %s' % args.output_dir)
+    if args.output_dir.exists() and not args.resume:
+        raise FileExistsError('Refusing to replace %s (pass --resume to continue it)'
+                              % args.output_dir)
 
     logs = args.output_dir/'logs'
     step = args.azimuth_sweep/args.frames
     jobs = []
+    skipped = 0
     for index in range(args.frames):
+        target = args.output_dir/'raw'/('f%04d' % index)
+        if args.resume and (target/'frames'/'frame_0000.png').exists():
+            skipped += 1
+            continue
+        if target.exists():
+            # A frame directory without its image was interrupted mid-render;
+            # render_boundary refuses existing directories, so clear it.
+            shutil.rmtree(target)
         azimuth = args.azimuth_start + index*step
         rotation = (tumble_angles(index, args.frames, args.rotation_speed)
                     if args.motion == 'tumble' else None)
@@ -132,13 +146,16 @@ def main():
           % (args.frames, args.mode, args.azimuth_start,
              args.azimuth_start+args.azimuth_sweep, step,
              args.width, args.height, args.spp, args.workers), flush=True)
+    if skipped:
+        print('resuming: %d frames already rendered, %d to go' % (skipped, len(jobs)),
+              flush=True)
 
     begin = time.perf_counter()
-    done = 0
+    done = skipped
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for index, azimuth in pool.map(render_frame, jobs):
             done += 1
-            print('  [%d/%d] azimuth %.2f' % (done, args.frames, azimuth), flush=True)
+            print('  [%d/%d] frame %d' % (done, args.frames, index), flush=True)
     seconds = time.perf_counter()-begin
 
     # ffmpeg needs a contiguous numbered sequence in one directory.

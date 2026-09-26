@@ -131,7 +131,6 @@ def build_diamond_scene(
     bounding_radius = float(np.linalg.norm(raw_verts, axis=1).max())
     return scene, bounding_radius
 
-
 # ─────────────────────────────────────────────
 # Path tracing: bounce rays through the diamond's BSDF
 # ─────────────────────────────────────────────

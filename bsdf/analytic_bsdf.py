@@ -16,10 +16,10 @@ class DiamondShading(mi.BSDF):
 
         reflection = mi.BSDFFlags.DeltaReflection | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide
         transmission = mi.BSDFFlags.DeltaTransmission | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide #refraction (Snell)
-        self.m_components = [reflection, transmission]
+        self.m_components =[reflection, transmission]
         self.m_flags = reflection | transmission
     
-    def sample(self, ctx, sc, sample1, sample2, active):
+    def sample(self, ctx, sc,sample1,sample2, active):
         cos_theta_i = mi.Frame3f.cos_theta(sc.wi)
         reflect_c, cos_theta_t, eta_it, eta_ti = mi.fresnel(cos_theta_i, mi.Float(self.eta))
 

@@ -85,7 +85,29 @@ def gather(scene, radius, parameters, entries, paths_per_entry, max_depth, seed,
     if entries < 1 or paths_per_entry < 1 or max_depth < 2:
         raise ValueError("Require entries >= 1, paths_per_entry >= 1, max_depth >= 2")
     rng = np.random.default_rng(seed if seed_sequence is None else seed_sequence)
-    records = []
+    # Preallocated columns rather than one dict per path: a dict of Python
+    # objects costs about 1.2 KB per record against 152 bytes here, which is
+    # what made fifty-million-record gathers impossible in memory. Rows are
+    # filled in the order paths were appended before, and values are rounded
+    # to float32 on assignment exactly as np.asarray rounded them afterwards,
+    # so output is bit-identical to the dict-based version for the same seed.
+    total = entries*paths_per_entry
+    arrays = {}
+    for name in ('entry_id', 'repeat_id'):
+        arrays[name] = np.empty(total, dtype=np.int64)
+    for name in ('entry_position', 'entry_normal', 'entry_direction', 'entry_local_wi'):
+        arrays[name] = np.empty((total, 3), dtype=np.float32)
+    arrays['entry_facet'] = np.empty(total, dtype=np.int64)
+    for name in ('wavelength_nm', 'wavelength_pdf', 'entry_transmittance'):
+        arrays[name] = np.empty(total, dtype=np.float32)
+    for name in ('exit_position', 'exit_direction', 'exit_normal'):
+        arrays[name] = np.empty((total, 3), dtype=np.float32)
+    arrays['exit_facet'] = np.empty(total, dtype=np.int64)
+    arrays['throughput'] = np.empty(total, dtype=np.float32)
+    arrays['depth'] = np.empty(total, dtype=np.int64)
+    arrays['status'] = np.empty(total, dtype=np.int64)
+    arrays['branch_log_probability'] = np.empty(total, dtype=np.float32)
+    row = 0
     attempts = 0
     for local_id in range(entries):
         entry_id = entry_offset + local_id
@@ -155,21 +177,25 @@ def gather(scene, radius, parameters, entries, paths_per_entry, max_depth, seed,
                     exit_normal = list(si.n)
                     exit_facet = int(si.prim_index)
                     break
-            records.append(dict(
-                entry_id=entry_id, repeat_id=repeat,
-                entry_position=list(first.p), entry_normal=list(first.n),
-                entry_direction=list(mi.Vector3f(travel)),
-                entry_local_wi=list(first.wi), entry_facet=int(first.prim_index),
-                wavelength_nm=wavelength, wavelength_pdf=1./470.,
-                entry_transmittance=1.-entry_f,
-                exit_position=exit_position, exit_direction=exit_direction,
-                exit_normal=exit_normal, exit_facet=exit_facet,
-                throughput=weight if status == 0 else 0.,
-                depth=depth, status=status, branch_log_probability=log_probability))
-    integer = {'entry_id', 'repeat_id', 'entry_facet', 'exit_facet', 'depth', 'status'}
-    arrays = {k: np.asarray([row[k] for row in records],
-                           dtype=np.int64 if k in integer else np.float32)
-              for k in records[0]}
+            arrays['entry_id'][row] = entry_id
+            arrays['repeat_id'][row] = repeat
+            arrays['entry_position'][row] = list(first.p)
+            arrays['entry_normal'][row] = list(first.n)
+            arrays['entry_direction'][row] = list(mi.Vector3f(travel))
+            arrays['entry_local_wi'][row] = list(first.wi)
+            arrays['entry_facet'][row] = int(first.prim_index)
+            arrays['wavelength_nm'][row] = wavelength
+            arrays['wavelength_pdf'][row] = 1./470.
+            arrays['entry_transmittance'][row] = 1.-entry_f
+            arrays['exit_position'][row] = exit_position
+            arrays['exit_direction'][row] = exit_direction
+            arrays['exit_normal'][row] = exit_normal
+            arrays['exit_facet'][row] = exit_facet
+            arrays['throughput'][row] = weight if status == 0 else 0.
+            arrays['depth'][row] = depth
+            arrays['status'][row] = status
+            arrays['branch_log_probability'][row] = log_probability
+            row += 1
     return arrays, attempts
 
 
