@@ -13,6 +13,7 @@ Exposure matches render_boundary.py's display convention, and is identical
 across panels so brightness is comparable by eye.
 """
 import argparse
+import math
 import json
 from pathlib import Path
 
@@ -25,15 +26,17 @@ import config  # resolve runtime before importing Mitsuba
 import mitsuba as mi
 
 mi.set_variant('scalar_spectral')
-from render_boundary import make_scene
+from render_boundary import make_scene, tumble_matrix
 from neural.boundary_model import load_model
 from utils.studio_env import display_exposure
 
 LUMINANCE = np.array([.2126, .7152, .0722])
 
 
-def stone_mask(checkpoint, width, height, azimuth):
-    scene, _, mesh = make_scene(checkpoint, width, height, azimuth)
+def stone_mask(checkpoint, width, height, azimuth, rotation_deg=None):
+    rotation = (None if rotation_deg is None
+                else tumble_matrix(*[math.radians(v) for v in rotation_deg]))
+    scene, _, mesh = make_scene(checkpoint, width, height, azimuth, rotation=rotation)
     sensor = scene.sensors()[0]
     mask = np.zeros((height, width), dtype=bool)
     for y in range(height):
@@ -58,6 +61,8 @@ def main():
     parser.add_argument('--analytic', type=Path, required=True, help='Merged analytic EXR')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--rotation_deg', type=float, nargs=3, metavar=('X', 'Y', 'Z'),
+                        help='Stone rotation of a tumbled pose, as given to render_boundary')
     parser.add_argument('--evaluation', type=Path,
                         help='evaluation.json to annotate the figure with')
     parser.add_argument('--title', default='')
@@ -70,7 +75,7 @@ def main():
     height, width = neural.shape[:2]
 
     _, checkpoint = load_model(args.model)
-    mask = stone_mask(checkpoint, width, height, args.azimuth)
+    mask = stone_mask(checkpoint, width, height, args.azimuth, args.rotation_deg)
     exposure = display_exposure()
 
     yn, ya = neural @ LUMINANCE, analytic @ LUMINANCE

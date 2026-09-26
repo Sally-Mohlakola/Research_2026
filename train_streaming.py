@@ -53,7 +53,13 @@ def load_group(paths):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--shards', type=Path, required=True, help='gather_sharded output dir')
+    parser.add_argument('--shards', type=Path, nargs='+', required=True,
+                        help='One or more gather_sharded output directories, mixed together')
+    parser.add_argument('--use_shards', type=int, nargs='+',
+                        help='Training shards to take from each directory, in order; '
+                             '0 means all')
+    parser.add_argument('--init', type=Path,
+                        help='Warm-start from this checkpoint (same head and geometry)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--head', choices=sorted(HEADS), default='clone_deep')
     parser.add_argument('--epochs', type=int, default=2)
@@ -72,19 +78,47 @@ def main():
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
 
-    shards = sorted(args.shards.glob('shard_*.npz'))
-    if len(shards) <= args.validation_shards:
-        raise ValueError('Not enough shards')
-    validation, train = shards[-args.validation_shards:], shards[:-args.validation_shards]
+    # Several pools can be mixed, e.g. camera-matched and uniform entry
+    # sampling. Each contributes its own last shards to validation, so the
+    # validation set covers every distribution being trained on.
+    if args.use_shards and len(args.use_shards) != len(args.shards):
+        parser.error('--use_shards needs one count per --shards directory')
+    train, validation, geometry = [], [], set()
+    for index, directory in enumerate(args.shards):
+        found = sorted(directory.glob('shard_*.npz'))
+        if len(found) <= args.validation_shards:
+            raise ValueError('Not enough shards in %s' % directory)
+        validation += found[-args.validation_shards:]
+        pool = found[:-args.validation_shards]
+        if args.use_shards and args.use_shards[index]:
+            pool = pool[:args.use_shards[index]]
+        train += pool
+        geometry.add(load_boundary(found[0])[1]['geometry_sha256'])
+    if len(geometry) != 1:
+        raise ValueError('Shard directories use different geometry')
     val_tensors, vertices, faces = load_group(validation)
     val_idx = torch.arange(len(val_tensors[0]))
-    _, metadata = load_boundary(shards[0])
+    _, metadata = load_boundary(train[0])
     metadata = {k: v for k, v in metadata.items() if k not in ('shard', 'attempts')}
+    if len(args.shards) > 1:
+        metadata['entry_sampling'] = 'mixed: ' + ', '.join(
+            '%s (%s)' % (d.name, load_boundary(sorted(d.glob('shard_*.npz'))[0])[1]
+                         .get('entry_sampling')) for d in args.shards)
 
     args.output.mkdir(parents=True, exist_ok=True)
     state_path = args.output/'state.pt'
     torch.manual_seed(args.seed)
     model = HEADS[args.head](vertices, faces, args.width, args.components)
+    if args.init and not state_path.exists():
+        # Warm start: continue from an already trained operator on the same
+        # geometry, e.g. to extend its coverage without starting over.
+        initial = torch.load(args.init, map_location='cpu', weights_only=True)
+        if initial.get('head', 'mixture') != args.head:
+            raise ValueError('--init checkpoint uses a different head')
+        if not torch.equal(initial['faces'], torch.from_numpy(faces.astype(np.int64))):
+            raise ValueError('--init checkpoint uses different geometry')
+        model.load_state_dict(initial['state_dict'])
+        print('warm start from %s' % args.init, flush=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     if state_path.exists():
         state = torch.load(state_path, map_location='cpu', weights_only=False)
@@ -147,15 +181,17 @@ def main():
 
     model.load_state_dict(state['best_state'])
     metrics = evaluate(model, val_tensors, val_idx)
-    manifest = args.shards/'manifest.json'
+    manifest_bytes = b''.join((d/'manifest.json').read_bytes() for d in args.shards)
     checkpoint = dict(schema_version=1, state_dict=state['best_state'], width=args.width,
                       components=args.components, head=args.head, metadata=metadata,
                       vertices=torch.from_numpy(vertices),
                       faces=torch.from_numpy(faces.astype(np.int64)),
                       input_radius=float(np.linalg.norm(vertices, axis=1).max()),
                       seed=args.seed, best_visits=state['best_visits'],
-                      source_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-                      source=str(args.shards), validation_shards=[p.name for p in validation],
+                      source_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                      source=[str(d) for d in args.shards],
+                      initialised_from=str(args.init) if args.init else None,
+                      validation_shards=[str(p) for p in validation],
                       density_measure='barycentric logits and outgoing tangent slopes; '
                                       'not solid-angle/area PDF')
     torch.save(checkpoint, args.output/'model.pt')

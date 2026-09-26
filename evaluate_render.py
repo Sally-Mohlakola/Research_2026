@@ -14,6 +14,7 @@ The analytic path is the reference transport here. It is not a converged
 physical ground truth, so these numbers bound agreement with that reference.
 """
 import argparse
+import math
 import json
 from pathlib import Path
 
@@ -23,7 +24,7 @@ import config  # resolve runtime before importing Mitsuba
 import mitsuba as mi
 
 mi.set_variant('scalar_spectral')
-from render_boundary import make_scene
+from render_boundary import make_scene, tumble_matrix
 from neural.boundary_model import load_model
 
 LUMINANCE = np.array([.2126, .7152, .0722])
@@ -56,8 +57,11 @@ def load_renders(directories):
     return np.stack(images), reports, stacked
 
 
-def stone_mask(checkpoint, width, height, azimuth):
-    scene, _, mesh = make_scene(checkpoint, width, height, azimuth)
+def stone_mask(checkpoint, width, height, azimuth, rotation_deg=None):
+    """Primary-hit stone pixels; `rotation_deg` matches render_boundary's tumble."""
+    rotation = (None if rotation_deg is None
+                else tumble_matrix(*[math.radians(v) for v in rotation_deg]))
+    scene, _, mesh = make_scene(checkpoint, width, height, azimuth, rotation=rotation)
     sensor = scene.sensors()[0]
     mask = np.zeros((height, width), dtype=bool)
     for y in range(height):
@@ -161,8 +165,8 @@ def main():
     neural, neural_reports, neural_parts = load_renders(args.neural)
     if analytic.shape != neural.shape:
         raise ValueError('Modes differ in resolution or seed count')
-    for key in ('azimuth', 'width', 'height', 'spp'):
-        if analytic_reports[0][key] != neural_reports[0][key]:
+    for key in ('azimuth', 'width', 'height', 'spp', 'rotation_deg'):
+        if analytic_reports[0].get(key) != neural_reports[0].get(key):
             raise ValueError('Modes disagree on %s; comparison would be unpaired' % key)
     if analytic_reports[0]['mode'] != 'analytic' or neural_reports[0]['mode'] != 'neural':
         raise ValueError('Render modes are mislabelled')
@@ -170,8 +174,10 @@ def main():
     _, checkpoint = load_model(args.model)
     height, width = analytic.shape[1], analytic.shape[2]
     azimuth = analytic_reports[0]['azimuth']
-    print('computing stone mask at azimuth %g' % azimuth, flush=True)
-    mask = stone_mask(checkpoint, width, height, azimuth)
+    rotation_deg = analytic_reports[0].get('rotation_deg')
+    print('computing stone mask at azimuth %g%s' % (
+        azimuth, '' if rotation_deg is None else ', rotation %s' % (rotation_deg,)), flush=True)
+    mask = stone_mask(checkpoint, width, height, azimuth, rotation_deg)
     if not mask.any():
         raise ValueError('Empty stone mask')
 

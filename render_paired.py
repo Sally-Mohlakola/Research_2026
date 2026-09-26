@@ -40,13 +40,15 @@ def run(command, log):
 
 def render_task(job):
     (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
-     logs, split, rfilter, deterministic, oracle) = job
+     logs, split, rfilter, deterministic, oracle, rotation) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
                '--scene_depth', scene_depth, '--rfilter', rfilter]
     if deterministic:
         command.append('--deterministic_exit')
+    if rotation:
+        command += ['--rotation_deg'] + ['%g' % v for v in rotation]
     if oracle and mode == 'neural':
         command.append('--oracle_facet')
     if split:
@@ -61,6 +63,8 @@ def main():
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--output_dir', type=Path, required=True)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--rotation_deg', type=float, nargs=3, metavar=('X', 'Y', 'Z'),
+                        help='Tumble the stone to this pose (degrees, eval.py convention)')
     parser.add_argument('--width', type=int, default=728)
     parser.add_argument('--height', type=int, default=728)
     parser.add_argument('--spp', type=int, default=8,
@@ -115,7 +119,7 @@ def main():
             jobs.append((directory, args.model, mode, args.azimuth, seed,
                          args.width, args.height, args.spp, args.scene_depth, logs,
                          args.split_components, args.rfilter, args.deterministic_exit,
-                         args.oracle_facet))
+                         args.oracle_facet, args.rotation_deg))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -145,6 +149,7 @@ def main():
                    modes=args.modes, workers=args.workers, rfilter=args.rfilter,
                    deterministic_exit=args.deterministic_exit,
                    oracle_facet=args.oracle_facet,
+                   rotation_deg=args.rotation_deg,
                    render_seconds=render_seconds, merged=merged,
                    result_images={m: str(p) for m, p in results.items()},
                    note='Per-seed renders under <mode>/s<seed>/ are ingredients at '

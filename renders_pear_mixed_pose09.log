@@ -1,0 +1,46 @@
+8 renders: analytic+neural x 4 seeds at 32 spp each (128 effective spp), 4 workers
+  [1/8] analytic seed 101
+  [2/8] analytic seed 102
+  [3/8] analytic seed 103
+  [4/8] analytic seed 104
+  [5/8] neural seed 101
+  [6/8] neural seed 102
+  [7/8] neural seed 103
+  [8/8] neural seed 104
+merging analytic
+merging neural
+evaluating
+computing stone mask at azimuth 0, rotation [108.0, 81.0, 27.0]
+
+azimuth 0, 512x512, 128 effective spp, 60918 stone pixels
+
+image shape                        analytic         neural
+mean                              0.0026924      0.0019335
+contrast                             4.8864        0.79177
+peak_over_mean                       143.52         16.012
+flash_fraction                    0.0091434     3.2831e-05
+
+agreement (half-split)               neural    noise floor          ratio
+relative_rmse                        4.9823         1.5562          3.202
+correlation                        0.015616        0.95106              -
+highlight_overlap_top1pct         0.0049261        0.84893       0.005803
+relative_energy_error              -0.27893      0.0093492          29.83
+chromaticity_error                  0.45123        0.30402          1.484
+
+component                       correlation   neural share     energy err
+operator                           0.014515         0.8849       -0.30735
+untouched                           0.88973         0.1151      0.0014026
+
+Wrote renders\pear_mixed_pose09\evaluation.json
+
+
+rendered in 1114 s
+
+FINISHED IMAGES (128 effective spp):
+  analytic renders\pear_mixed_pose09\analytic_az000.png
+           mean luminance 0.00126719
+  neural   renders\pear_mixed_pose09\neural_az000.png
+           mean luminance 0.0010852
+
+The per-seed renders under <mode>/s<seed>/ are ingredients at 32 spp each,
+not results. Use the files listed above.
