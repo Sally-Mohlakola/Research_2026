@@ -683,7 +683,7 @@ only the first is explained here.
 
 Claims revised on 18 September 2026 are listed with their replacements in
 `CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis
-scripts not yet committed; see `CODE_FREEZE.md` item 1.
+scripts not yet committed; see `README.md` §6, item 1.
 
 Training pool: 1,048,576 records from 65,536 entry states (seed 101). Test pool:
 262,144 records from 16,384 entry states (seed 202). Geometry
