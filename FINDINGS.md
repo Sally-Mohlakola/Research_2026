@@ -431,6 +431,52 @@ merely too small, capacity would have closed more. This is independent support
 for the encoding argument: the limit is not how much the head can compute but
 what it can see.
 
+### Fourier features do not close the gap either
+
+If the decode's remaining error were spectral bias -- an MLP's preference for
+smooth functions -- random Fourier features on the input (Tancik et al. 2020)
+would reduce it. A sweep script repeated the decoder sweep's protocol
+exactly (same pool, split, seed, 30 epochs, selection on validation coordinate
+error) and retrains the sweep's winner as the control, which reproduced its
+21.61 degrees. The arms differ only in the input encoding: 128 random
+frequencies at scale 1, 4 or 10, applied to both trunks. The experiment code
+(`fourier_decoder.py` and the `clone_fourier` and `mixture_fourier` heads) was
+removed after this negative result was recorded and is in no commit; the
+numbers here and the saved reports under `checkpoints/` are the record.
+
+| arm | exit angle given the true facet | median | exit-facet top-1 |
+| --- | --- | --- | --- |
+| control (clone_deep) | **21.61 deg** | **14.22 deg** | **0.394** |
+| Fourier, scale 1 | 26.67 deg | 20.88 deg | 0.360 |
+| Fourier, scale 4 | 25.99 deg | 20.11 deg | 0.307 |
+| Fourier, scale 10 | 25.83 deg | 19.72 deg | 0.302 |
+
+Every encoding is worse. Higher frequencies help the decode a little but cost
+branch selection more, and validation error rising after the first epochs shows
+the encoded network memorising entry states rather than generalising. Rendered
+on the round cut at 256 spp against the same analytic reference, the scale-10
+operator reaches correlation 0.078, highlight overlap 0.151, energy +26% and
+contrast 1.12 (reference 3.74) -- below the mixture operator on every agreement
+measure. With depth saturated and fifty million records helping only modestly,
+capacity, data and spectral bias are all ruled out as the missing ingredient.
+
+The mixture operator was given the same encoding (trained with the camera
+model's recipe: width 64, four components,
+seed 23, 80 epochs). Scale 1 matches its exit-facet accuracy (0.3705 against
+0.3711) but places the exit worse (coordinate NLL 4.640 against 3.859; joint
+NLL 7.224 against 6.407); scale 10 peaks at epoch 8 and overfits. Rendered
+against the same reference, the scale-1 mixture is indistinguishable from the
+original:
+
+| mixture operator, round cut, 256 spp | correlation | highlight overlap | energy | contrast (ref 3.74) |
+| --- | --- | --- | --- | --- |
+| original | 0.174 | 0.235 | -1.1% | 0.85 |
+| with Fourier features, scale 1 | 0.168 | 0.243 | -0.5% | 0.85 |
+
+A measurably worse operator gives the same image -- one more instance of the
+operator's accuracy not reaching the render. The mixture's flat shading is set
+by its averaging over sampled exits, not by the input encoding.
+
 ### Operator accuracy does not transfer to the image
 
 The clearest result in this project, and it took three experiments to see.
@@ -749,6 +795,8 @@ only the first is explained here.
 | dispersion regimes | `checkpoints/dispersion_pear/train.json` (pilot: `checkpoints/dispersion_pilot/`) |
 | dispersion head | `checkpoints/dispersion_pear/head/metrics.json`, via `train_dispersion.py` |
 | fire measurement | `renders/pear_dispersion_pose09/fire.json`, figure `renders/pear_dispersion_pose09_fire.png` |
+| Fourier features | `checkpoints/fourier_decoder/fourier_decoder.json`, render `renders/gia_fourier/evaluation.json` |
+| Fourier mixture | `checkpoints/mixture_fourier/s{1,10}/metrics.json`, render `renders/gia_mixture_fourier/evaluation.json` |
 
 Claims revised on 18 September 2026 are listed with their replacements in
 `CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis
