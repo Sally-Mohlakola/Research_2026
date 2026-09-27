@@ -34,6 +34,21 @@ def load_boundary(path):
     return data, metadata
 
 
+def load_encoded_pool(path):
+    """Load a boundary pool and encode it for the operator, in one call.
+
+    Returns (data, vertices, faces, x, facet, y, valid, escaped): the validated
+    record arrays, the pool's geometry, and encode_data's model inputs,
+    exit-facet labels, exit coordinates and masks.
+    """
+    from neural.boundary_model import encode_data
+    data, _ = load_boundary(path)
+    with np.load(path, allow_pickle=False) as archive:
+        vertices, faces = archive['vertices'].copy(), archive['faces'].copy()
+    x, facet, y, valid, escaped, _ = encode_data(data, vertices, faces)
+    return data, vertices, faces, x, facet, y, valid, escaped
+
+
 def split_entries(entry_ids, validation_fraction=.2, seed=0):
     """Keep repeated outcomes from a single entry entirely within one split."""
     if not 0 < validation_fraction < 1:

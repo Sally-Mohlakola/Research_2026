@@ -36,7 +36,7 @@ further from the truth than a blurred one.
 
 ## 2. Where things stand
 
-Details, tables and provenance are in `FINDINGS.md`.
+Details, tables and provenance are in `docs/FINDINGS.md`.
 
 | result | evidence |
 | --- | --- |
@@ -65,12 +65,12 @@ Details, tables and provenance are in `FINDINGS.md`.
 | file | what it is |
 | --- | --- |
 | `README.md` | this status document |
-| `FINDINGS.md` | every result with tables and sources |
-| `PAPER_DRAFT.md` | full draft paper, abstract to conclusion |
-| `METHODOLOGY_EVOLUTION.md` | RDM → LEAN-inspired sparkle → learned operator, with 33 references |
-| `CORRECTIONS-2026-09-18.md` | dated record of claims revised when measurements contradicted them |
-| `NEURAL_DIAMOND_NEXT.md` | the original implementation contract; historical, cited by the methodology |
-| `DENOISING.md` | rules for the presentation-only chroma denoiser |
+| `docs/FINDINGS.md` | every result with tables and sources |
+| `docs/PAPER_DRAFT.md` | full draft paper, abstract to conclusion |
+| `docs/METHODOLOGY_EVOLUTION.md` | RDM → LEAN-inspired sparkle → learned operator, with 33 references |
+| `docs/CORRECTIONS-2026-09-18.md` | dated record of claims revised when measurements contradicted them |
+| `docs/NEURAL_DIAMOND_NEXT.md` | the original implementation contract; historical, cited by the methodology |
+| `docs/DENOISING.md` | rules for the presentation-only chroma denoiser |
 
 ---
 
@@ -78,40 +78,58 @@ Details, tables and provenance are in `FINDINGS.md`.
 
 The operator shares no code with the RDM system (checked by imports).
 
+**Layout.** Scripts live in stage folders; run them from the repository root by
+path, e.g. `python -B pipeline/render_paired.py ...`. Each script puts the root
+on its import path, so shared packages and the other folders resolve either way.
+
+| folder | contents |
+| --- | --- |
+| `pipeline/` | gather, train and render: the operator and dispersion head end to end |
+| `analysis/` | evaluation, oracles, ablations, sweeps and measurements |
+| `figures/` | result figures and visualisations |
+| `legacy/` | the RDM pipeline's entry points (`eval.py` and its drivers) |
+| `neural/`, `bsdf/`, `utils/`, `config/` | shared packages (models, spectral BSDFs, lighting, settings) |
+| `ground_truth/` | cut geometry and mesh validation |
+| `docs/` | findings, corrections, methodology, paper draft, commands |
+| `tests/` | `python -B -m unittest discover tests` |
+
 **The operator pipeline**
 
 | script | role |
 | --- | --- |
-| `gather_boundary.py` | trace true interior transport; uniform (with aim offset) or camera-matched entry sampling; preallocated arrays, bit-identical to the original |
-| `gather_sharded.py` | the same gather in resumable on-disk shards, for pools that don't fit in memory |
+| `pipeline/gather_boundary.py` | trace true interior transport; uniform (with aim offset) or camera-matched entry sampling; preallocated arrays, bit-identical to the original |
+| `pipeline/gather_sharded.py` | the same gather in resumable on-disk shards, for pools that don't fit in memory |
 | `neural/boundary_model.py` | the operator: mixture, clone and deep-clone heads; data encoding |
 | `neural/boundary_data.py` | loading and entry-grouped splitting |
-| `train_boundary.py` | in-memory training |
-| `train_streaming.py` | streaming training over shards; mixes several pools; warm start; resumable |
-| `render_boundary.py` | spectral renderer calling the operator for interior transport; supports tumbled poses and stratified wavelengths |
+| `pipeline/train_boundary.py` | in-memory training |
+| `pipeline/train_streaming.py` | streaming training over shards; mixes several pools; warm start; resumable |
+| `pipeline/render_boundary.py` | spectral renderer calling the operator for interior transport; supports tumbled poses and stratified wavelengths |
 
 **Evaluation and experiments**
 
 | script | produces |
 | --- | --- |
-| `render_paired.py` | neural and analytic renders over several seeds, merged and evaluated; supports rotated poses |
-| `merge_renders.py`, `evaluate_render.py`, `compare_figure.py` | seed merging, masked comparison with measured noise floors, side-by-side figures |
-| `evaluate_boundary.py`, `compare_operators.py` | operator-level metrics on held-out transport |
-| `oracle_boundary.py` | nearest-neighbour oracle |
-| `ablate_conditioning.py` | conditioning ablation |
-| `improve_decoder.py` | decoder sweep (resumable) |
-| `retarget_checkpoint.py` | re-point a trained operator at another cut with the same face count |
-| `animate_boundary.py` | orbit and tumble animations (resumable) |
-| `flash_sweep.py` | scintillation across azimuths |
-| `plot_results.py`, `visualize_geometry.py`, `visualize_entry_sampling.py` | figures |
-| `make_boundary_subset.py`, `build_boundary_prior.py`, `denoise_chroma.py` | data ladder subsets, the boundary RDM prior, presentation denoising |
+| `pipeline/render_paired.py` | neural and analytic renders over several seeds, merged and evaluated; supports rotated poses |
+| `pipeline/merge_renders.py`, `analysis/evaluate_render.py`, `analysis/compare_figure.py` | seed merging, masked comparison with measured noise floors, side-by-side figures |
+| `analysis/evaluate_boundary.py`, `analysis/compare_operators.py` | operator-level metrics on held-out transport |
+| `analysis/oracle_boundary.py` | nearest-neighbour oracle |
+| `analysis/ablate_conditioning.py` | conditioning ablation |
+| `analysis/improve_decoder.py` | decoder sweep (resumable) |
+| `pipeline/retarget_checkpoint.py` | re-point a trained operator at another cut; `--allow_resize` for a different face count |
+| `pipeline/gather_dispersion.py`, `pipeline/train_dispersion.py`, `neural/dispersion_model.py` | paired-wavelength gather and the learned dispersion head (`render_boundary.py --dispersion`) |
+| `analysis/measure_fire.py` | fire: colour that repeats between independent halves of a render |
+| `pipeline/animate_boundary.py` | orbit and tumble animations (resumable) |
+| `analysis/flash_sweep.py` | scintillation across azimuths |
+| `figures/plot_results.py`, `figures/visualize_geometry.py`, `figures/visualize_entry_sampling.py` | figures |
+| `analysis/make_boundary_subset.py`, `analysis/build_boundary_prior.py`, `figures/denoise_chroma.py` | data ladder subsets, the boundary RDM prior, presentation denoising |
 
 **Geometry** (`ground_truth/`): round, pear and step cut generators, dispatched
-by `cuts.py`; `pear_validation.py` validates all three.
+by `cuts.py`; `validate_meshes.py` validates them all
+(`python -B -m ground_truth.validate_meshes`).
 
-**Legacy RDM pipeline**, kept as history and baseline: `eval.py`, `gather_rdm.py`,
-`train_models.py`, `experiments.py`, `slurm/`, `composite.py`,
-`integrators/depth_aware.py`, `utils/rdm.py`, `bsdf/neural_bsdf.py` (including the
+**Legacy RDM pipeline**, kept as history and baseline: `legacy/eval.py`, `legacy/gather_rdm.py`,
+`legacy/train_models.py`, `legacy/experiments.py`, `slurm/`, `legacy/composite.py`,
+`legacy/depth_aware.py`, `utils/rdm.py`, `bsdf/neural_bsdf.py` (including the
 LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 `neural/drjit_wrapper.py`. Shared with the operator: `bsdf/dispersion.py`,
 `utils/studio_env.py`, `ground_truth/brilliant_geometry.py`.
@@ -134,7 +152,7 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 | experiment | result lives in |
 | --- | --- |
 | data ladder | `checkpoints/boundary_scale_v1/ladder_summary.json` |
-| capacity probe, two widths | `FINDINGS.md` |
+| capacity probe, two widths | `docs/FINDINGS.md` |
 | camera-matched training | `checkpoints/camera_pool`, `camera_model` |
 | paired render comparison, round and pear | `renders/neural_gia_00`, `renders/neural_pear_00` |
 | component decomposition | every `evaluation.json` |
@@ -145,7 +163,7 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 | conditioning ablation | `checkpoints/camera_model/conditioning_ablation.json` |
 | decoder sweep | `checkpoints/camera_model/decoder_ablation.json` |
 | 50M-record training | `checkpoints/pear_deep_50m`, `renders/pear_deep_50m` |
-| RDM as sampler and as branch prior | `FINDINGS.md` (scripts not yet in repo — see §6) |
+| RDM as sampler and as branch prior | `docs/FINDINGS.md` (scripts not yet in repo — see §6) |
 | cross-cut: pear | `checkpoints/pear_*` |
 | tumble blind spot and its fix | `renders/pear_tumble*`, `renders/pear_mixed_pose09` |
 | mode multiplicity | effectively answered: median 2 exit facets per entry state, zero spread within a facet |
@@ -181,12 +199,12 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 
 1. **Commit the three analysis scripts** (~1 h). `measure_within_facet.py`,
    `compare_rdm_conditioning.py` and `measure_prior_variance.py` produced numbers
-   quoted in `FINDINGS.md` and `PAPER_DRAFT.md` but exist only in a temp
+   quoted in `docs/FINDINGS.md` and `docs/PAPER_DRAFT.md` but exist only in a temp
    directory, so those numbers cannot currently be reproduced.
 2. **Analytic convergence check** (~2 h). One view at increasing spp; show masked
    error falling to the highest.
 3. **Sample/PDF consistency test** (~half a day), or state it as a limitation.
-4. **Bring `FINDINGS.md` up to date**: the render folders were renamed, and the
+4. **Bring `docs/FINDINGS.md` up to date**: the render folders were renamed, and the
    50M, mixed-training and tumble results are not yet written in.
 5. **Write** — see §10.
 
@@ -194,8 +212,8 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 
 - Tag the commit that produced the thesis results (`git tag thesis-results`)
   before any refactor.
-- Pass `--stratify_wavelength` through `render_paired.py` and
-  `animate_boundary.py` (off by default) to reduce colour speckle for free.
+- Pass `--stratify_wavelength` through `pipeline/render_paired.py` and
+  `pipeline/animate_boundary.py` (off by default) to reduce colour speckle for free.
 - A from-scratch model on the mixed data, if the mixed-training numbers go in the
   thesis (the current one is fine-tuned).
 
@@ -229,30 +247,37 @@ To add, ordered by the claim each protects:
 
 ## 8. Code cleanup
 
-**Delete**
+**Done (27 September 2026)**, each step checked to reproduce stored output:
 
-- `renders_pear_tumble.log`, `renders_pear_tumble_mixed.log`,
-  `renders_pear_mixed_pose09.log` (stray, committed by accident); ignore `*.log`.
-- `ground_truth/geometry_leakage_validation.py` — reports false leaks on
-  watertight meshes; `pear_validation.py` does the job correctly.
-- `export_rdm_json.py` — feeds a viewer that isn't in the repo.
-- `ground_truth/diamond.py` — an unused early prototype.
-- `compare_boundary_sampling.py` — once `measure_prior_variance.py` replaces it.
-- Probably `ground_truth/geometry_validation.py` — a misnamed interactive viewer,
-  superseded.
+- Stray `.log` files removed from git (eight); `*.log` is now ignored.
+- Deleted `ground_truth/geometry_leakage_validation.py` (false leaks on
+  watertight meshes), `export_rdm_json.py` (fed a viewer not in the repo) and
+  `ground_truth/geometry_validation.py` (misnamed interactive viewer, superseded
+  by `figures/visualize_geometry.py`).
+- `stone_mask` now lives only in `analysis/evaluate_render.py`; `analysis/compare_figure.py` imports
+  it. The figure rebuilt with identical numbers.
+- The three `load_pool` copies share `neural/boundary_data.load_encoded_pool`;
+  their outputs are byte-identical to before.
+- `ground_truth/pear_validation.py` renamed `validate_meshes.py`; 9 of 9 meshes pass.
+- Unused constants removed from `analysis/oracle_boundary.py`, the unused task field and a
+  stale docstring fixed in `pipeline/gather_sharded.py`; shards are identical to before.
+- `pipeline/render_paired.py` states that it is deliberately RDM-free.
 
-**Tidy**
+**Kept on purpose**
 
-- Move the legacy RDM pipeline into `legacy/` and check `eval.py` still runs.
-- Merge duplicated helpers: `stone_mask` (two files), `load_pool` (three).
-- Rename `ground_truth/pear_validation.py` to `validate_meshes.py`.
-- Decide whether `render_paired.py` exposes `--rdm_prior`, or state that it is
-  deliberately RDM-free.
-- Remove the unused constants in `oracle_boundary.py` and the unused field in
-  `gather_sharded.py`.
+- `ground_truth/diamond.py` is the legacy analytic renderer (lit identically to
+  `legacy/eval.py` through `utils/studio_env.py`), not an unused prototype.
+- `analysis/compare_boundary_sampling.py` stays until `measure_prior_variance.py` exists
+  to replace it.
+- The legacy RDM pipeline's entry points moved to `legacy/`, but its modules
+  inside `bsdf/`, `neural/` and `utils/` stay in those shared packages, which
+  the operator also uses. `legacy/eval.py` needs Mitsuba's LLVM backend, absent
+  on this machine, so it was checked for syntax and import paths only; the
+  experiment driver still writes `checkpoints/` and `renders/` at the repo root.
 
 **Do not delete** `checkpoints/` or `renders/` data: it is not in git, so deletion
-is permanent, and "not cited" does not mean unused. If disk space is ever needed,
+is permanent, and "not cited" does not mean unused. It currently lives in
+`../checkpoint_history/` and `../renders_history/`. If disk space is ever needed,
 archive the legacy `run_*`, `ks_*` and `rA_*` checkpoints rather than deleting.
 
 **Refactor rule:** tag first, change in small steps, and after any step that
@@ -264,35 +289,35 @@ touches computation reproduce a stored result exactly.
 
 ```bash
 # data (camera-matched, round cut)
-python -B gather_boundary.py --output checkpoints/camera_pool/train.npz --entries 65536 \
+python -B pipeline/gather_boundary.py --output checkpoints/camera_pool/train.npz --entries 65536 \
   --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 --entry_sampling camera --azimuth_range 0 360
 
 # operator
-python -B train_boundary.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
+python -B pipeline/train_boundary.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
 
 # paired render and evaluation
-python -B render_paired.py --model checkpoints/camera_model/model.pt --output_dir renders/<name> \
+python -B pipeline/render_paired.py --model checkpoints/camera_model/model.pt --output_dir renders/<name> \
   --width 512 --height 512 --spp 32 --seeds 101 102 103 104 105 106 107 108 --workers 4 --split_components
 
 # model-level analyses
-python -B oracle_boundary.py --train checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json>
-python -B ablate_conditioning.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 60
-python -B improve_decoder.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 30 --resume
+python -B analysis/oracle_boundary.py --train checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json>
+python -B analysis/ablate_conditioning.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 60
+python -B analysis/improve_decoder.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 30 --resume
 
 # large pools
-python -B gather_sharded.py --output_dir checkpoints/pear_pool_50m --records 50000000 --workers 8 --max_seconds 480
-python -B train_streaming.py --shards checkpoints/pear_pool_50m --output checkpoints/pear_deep_50m --epochs 2 --max_seconds 540
+python -B pipeline/gather_sharded.py --output_dir checkpoints/pear_pool_50m --records 50000000 --workers 8 --max_seconds 480
+python -B pipeline/train_streaming.py --shards checkpoints/pear_pool_50m --output checkpoints/pear_deep_50m --epochs 2 --max_seconds 540
 
 # tumble (resumable)
-python -B animate_boundary.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
+python -B pipeline/animate_boundary.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
   --motion tumble --frames 60 --width 384 --height 384 --spp 32 --workers 4 --fps 30 [--resume]
 
 # figures
-python -B plot_results.py
+python -B figures/plot_results.py
 ```
 
 Parallel gathers are reproducible only with the same seed **and** worker count;
-`gather_sharded.py` is reproducible regardless of worker count.
+`pipeline/gather_sharded.py` is reproducible regardless of worker count.
 
 ---
 
@@ -352,11 +377,11 @@ results is real, which is a further reason an attempted fix is worth having.
 - **Memory is the binding constraint.** The machine has 15.3 GB and something
   outside this project holds ~11 GB. Background runs have repeatedly been killed
   under memory pressure. Use 4 workers rather than 8, prefer the resumable tools
-  (`gather_sharded.py`, `train_streaming.py`, `improve_decoder.py --resume`,
+  (`pipeline/gather_sharded.py`, `pipeline/train_streaming.py`, `improve_decoder.py --resume`,
   `animate_boundary.py --resume`), and run long jobs in bounded steps
   (`--max_seconds`).
 - Each render process holds Mitsuba and PyTorch at ~250 MB.
-- `eval.py` is the legacy path and needs `--diamond_name` explicitly; it cannot
+- `legacy/eval.py` is the legacy path and needs `--diamond_name` explicitly; it cannot
   build pear or step cuts (its mesh builder is round-only).
 - Render timings: a 512×512, 32-spp pear frame takes ~9 min with four running
   together; a 60-frame 384×384 tumble takes 75–105 min at 4 workers.

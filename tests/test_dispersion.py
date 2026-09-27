@@ -55,7 +55,7 @@ class DispersionRenderTests(unittest.TestCase):
         # stays, splits or reflects at the first surface, must still carry one.
         # This checks the lane masks, the Fresnel ratios and the lane average.
         script = r"""
-import render_boundary as rb
+import pipeline.render_boundary as rb
 import mitsuba as mi
 import numpy as np
 import torch

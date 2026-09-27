@@ -13,4 +13,4 @@
 # export DRJIT_LIBLLVM_PATH=/path/to/libLLVM.so
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-srun python experiments.py --stage gather --index $SLURM_ARRAY_TASK_ID
+srun python legacy/experiments.py --stage gather --index $SLURM_ARRAY_TASK_ID

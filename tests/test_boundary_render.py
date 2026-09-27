@@ -8,7 +8,7 @@ from pathlib import Path
 class RenderTests(unittest.TestCase):
     def test_constant_illumination_and_neural_exit(self):
         script = r"""
-import render_boundary as rb
+import pipeline.render_boundary as rb
 import mitsuba as mi
 import numpy as np
 import torch

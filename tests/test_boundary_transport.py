@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from gather_boundary import build_scene, gather, dielectric
+from pipeline.gather_boundary import build_scene, gather, dielectric
 from config.parameters import get_diamond_parameters
 from neural.boundary_data import split_entries
 import mitsuba as mi
