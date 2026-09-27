@@ -585,6 +585,72 @@ network lacks.
 `rdm_prior: None`, and `render_paired.py` does not expose the option. The RDM is
 this project's ancestor and its baseline, not a component of its method.
 
+### Dispersion: why the operator ignores wavelength, and a learned fix
+
+The conditioning ablation found the operator does not use wavelength. A
+paired-wavelength gather (`gather_dispersion.py`) explains why. Each entry state
+is traced at four wavelengths; the hero samples its reflect/transmit choices and
+the other colours replay them, so every recorded split is geometric, not a
+sampling artefact. Pear, 1.5 million entries, camera and uniform entries mixed:
+
+| internal interactions | share of light | all four colours keep the hero's route |
+| --- | --- | --- |
+| 1 | 6% | 94% |
+| 2 | 10% | 93% |
+| 3 | 26% | 86% |
+| 4-5 | 14% | 75% |
+| 6-9 | 17% | 53% |
+| 10+ | 26% | 16% |
+
+Dispersion has two regimes. On short paths the colours share a route and their
+exits differ by a median 0.37 degrees, against an operator exit error of about
+21 degrees -- so the wavelength signal is roughly fifty times below the error,
+and a network trained on absolute exits rationally ignores it. On long paths
+each bounce amplifies the colour difference until the colours leave by
+unrelated routes (median separation 5.4 degrees, 90th percentile 93), which no
+smooth wavelength-conditioned exit can represent.
+
+A dispersion head (`neural/dispersion_model.py`) models both regimes on top of
+the unchanged operator. Given the hero's entry state and exit, it predicts for
+another wavelength a gate -- does this colour stay on the hero's route -- and,
+when it does, the shift of its exit coordinates. A colour the gate sends away
+is drawn independently from the operator at its own wavelength. On 600k held-out
+pairs, after 12 epochs:
+
+| | head | baseline |
+| --- | --- | --- |
+| gate accuracy | 0.794 | 0.735 (always "stays") |
+| gate cross-entropy | 0.432 | 0.578 (constant) |
+| exit error of a colour that stays, median | 0.152 deg | 0.371 deg (no shift, today's operator) |
+| colour spread explained | 84.6% | 0% |
+
+Learned in isolation, the colour shift is easy: the operator's large error is
+common to all colours and cancels out of the difference.
+
+In the renderer (`--dispersion`) all four spectral lanes are traced; they share
+the hero's first-surface decision, each weighted by its own Fresnel ratio, and
+split at the operator. Energy is conserved under constant illumination (unit
+test) and the pose-9 frame changes brightness by -2% against the plain neural
+render. Fire is measured by `measure_fire.py`: on the brightest 10% of stone
+pixels, the colour that two independent halves of a render share (coherent)
+against the colour they do not (noise).
+
+| pear, pose 9, 128 spp | coherent colour (fire) | colour noise | agreement |
+| --- | --- | --- | --- |
+| analytic | **1.010** | 0.924 | 0.54 |
+| neural | 0.122 | 1.201 | 0.01 |
+| neural + dispersion head | 0.232 | **0.397** | 0.25 |
+
+The head nearly doubles coherent colour and cuts colour noise by two thirds --
+the rainbow speckle is largely gone, because colours that stay together now
+travel together. But fire reaches under a quarter of the reference and does not
+appear as the sharp spectral bands of the analytic render. The reason is the
+same finding as the rest of this document: the shift is applied to exits the
+operator has already blurred and misplaced, and the split regime, which carries
+much of the reference's colour, is drawn independently and so contributes no
+coherent pattern. The mechanism is learnable; the image is limited by the
+transport it rides on.
+
 ## Mechanism
 
 The broadening that erases flashes and the broadening that raises variance are
@@ -680,6 +746,9 @@ only the first is explained here.
 | decoder sweep | `checkpoints/camera_model/decoder_ablation.json`, via `improve_decoder.py` |
 | improved pear render | `renders/pear_deep/evaluation.json`, model `checkpoints/pear_deep` |
 | shipped pear render | `renders/neural_pear_00/`, re-evaluated at four matched seeds |
+| dispersion regimes | `checkpoints/dispersion_pear/train.json` (pilot: `checkpoints/dispersion_pilot/`) |
+| dispersion head | `checkpoints/dispersion_pear/head/metrics.json`, via `train_dispersion.py` |
+| fire measurement | `renders/pear_dispersion_pose09/fire.json`, figure `renders/pear_dispersion_pose09_fire.png` |
 
 Claims revised on 18 September 2026 are listed with their replacements in
 `CORRECTIONS-2026-09-18.md`. Three results above were produced by analysis

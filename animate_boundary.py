@@ -40,7 +40,7 @@ def tumble_angles(index, frames, speed=1.0):
 
 def render_frame(job):
     (index, azimuth, directory, model, mode, seed, width, height, spp,
-     scene_depth, logs, rotation, stratify) = job
+     scene_depth, logs, rotation, stratify, dispersion) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
@@ -49,6 +49,8 @@ def render_frame(job):
         command += ['--rotation_deg'] + ['%g' % v for v in rotation]
     if stratify:
         command.append('--stratify_wavelength')
+    if dispersion:
+        command += ['--dispersion', dispersion]
     run(command, logs/('frame_%04d.log' % index))
     return index, azimuth
 
@@ -108,6 +110,8 @@ def main():
                              'is what eval.py does and what shows scintillation.')
     parser.add_argument('--rotation_speed', type=float, default=1.0,
                         help='Turns multiplier for --motion tumble.')
+    parser.add_argument('--dispersion', type=Path,
+                        help='Learned dispersion head (train_dispersion.py); neural mode only.')
     parser.add_argument('--stratify_wavelength', action='store_true',
                         help='Spread the hero wavelengths evenly over the '
                              'spectrum; unbiased, free, and reduces chromatic speckle.')
@@ -145,7 +149,7 @@ def main():
                      args.model, args.mode,
                      args.seed + (index if args.vary_seed else 0),
                      args.width, args.height, args.spp, args.scene_depth, logs,
-                     rotation, args.stratify_wavelength))
+                     rotation, args.stratify_wavelength, args.dispersion))
 
     print('%d frames, %s, %gx%g degrees at %g deg/frame, %dx%d at %d spp, %d workers'
           % (args.frames, args.mode, args.azimuth_start,
@@ -180,6 +184,7 @@ def main():
         spp=args.spp, seed=args.seed, vary_seed=args.vary_seed, fps=args.fps,
         motion=args.motion, rotation_speed=args.rotation_speed,
         stratify_wavelength=args.stratify_wavelength,
+        dispersion=str(args.dispersion) if args.dispersion else None,
         render_seconds=seconds, outputs=[str(p) for p in written]),
         indent=2), encoding='utf-8')
 

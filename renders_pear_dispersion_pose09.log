@@ -1,0 +1,15 @@
+4 renders: neural x 4 seeds at 32 spp each (128 effective spp), 4 workers
+  [1/4] neural seed 101
+  [2/4] neural seed 102
+  [3/4] neural seed 103
+  [4/4] neural seed 104
+merging neural
+
+rendered in 1533 s
+
+FINISHED IMAGES (128 effective spp):
+  neural   renders\pear_dispersion_pose09\neural_az000.png
+           mean luminance 0.00106428
+
+The per-seed renders under <mode>/s<seed>/ are ingredients at 32 spp each,
+not results. Use the files listed above.

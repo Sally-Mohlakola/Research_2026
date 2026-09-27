@@ -3,6 +3,14 @@
 The model replaces the complete journey conditional on entry transmission.
 Entry reflection/transmission is sampled with Fresnel probabilities, so entry T
 must NOT also multiply the transmitted branch. No learned PDF is used for MIS.
+
+By default one hero wavelength is traced per camera sample. With a learned
+dispersion head (--dispersion) all four spectral lanes are traced: they share
+the hero's first-surface decision, weighted by each lane's own Fresnel ratio,
+and at the operator the head decides per lane whether that colour stays on the
+hero's route (and how far its exit shifts) or leaves independently, in which
+case the operator is sampled again at that lane's wavelength. From there each
+lane continues as its own single-wavelength path.
 """
 import argparse
 import hashlib
@@ -18,6 +26,7 @@ import torch
 
 mi.set_variant('scalar_spectral')
 from neural.boundary_model import load_model
+from neural.dispersion_model import hero_coordinates, load_dispersion
 from bsdf.dispersion import diamond_ior
 from utils.studio_env import studio_lighting, display_exposure
 
@@ -101,7 +110,7 @@ def analytic_exit(first, stone, eta, max_depth, rng):
 def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
            mode='neural', scene_depth=8, batch_size=512, prior=None, prior_fraction=.25,
            stratify_wavelength=False, rotation=None, deterministic_exit=False,
-           oracle_facet=False):
+           oracle_facet=False, dispersion=None):
     rng = np.random.default_rng(seed)
     generator = torch.Generator().manual_seed(seed)
     forward_rotation = None if rotation is None else np.asarray(rotation, dtype=np.float64)
@@ -115,6 +124,83 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
     stats = dict(neural_queries=0, neural_escaped=0, predicted_reentry=0,
                  analytic_escaped=0, analytic_truncated=0, analytic_invalid=0,
                  inside_scene_hit=0, scene_truncated=0)
+    if dispersion is not None:
+        if mode != 'neural' or prior is not None or oracle_facet:
+            raise ValueError('The dispersion head needs plain neural mode')
+        stats.update(dispersion_lanes=0, dispersion_stays=0, dispersion_splits=0,
+                     dispersion_split_escaped=0, dispersion_lane_reentry=0)
+    lane_masks = [mi.Spectrum([1. if j == k else 0. for j in range(4)]) for k in range(4)]
+
+    def exit_ray(template, facet, position, direction):
+        """World-space ray leaving an object-space exit, or None if it re-enters."""
+        exit_si = mi.SurfaceInteraction3f()
+        exit_n = model.normal[facet].numpy()
+        # Predictions come back in object space; rotate them out.
+        if rotation is not None:
+            position, exit_n, direction = (forward_rotation @ position, forward_rotation @ exit_n,
+                                           forward_rotation @ direction)
+        exit_si.p = mi.Point3f(position)
+        exit_si.n = mi.Normal3f(exit_n)
+        exit_si.wavelengths = template.wavelengths
+        exit_si.time = template.time
+        # spawn_ray uses Mitsuba's surface-offset convention.
+        out = exit_si.spawn_ray(mi.Vector3f(direction))
+        # Do not tunnel through the stone or invent a corrected exit.
+        return None if stone.ray_test(out) else out
+
+    def disperse(group, inputs, prediction, rows, spawned):
+        """Split all-lane paths at the operator into one path per lane.
+
+        Lane 0 is the hero and takes the operator's own draw. Each other lane
+        asks the dispersion head whether it stays on the hero's route -- then
+        its exit is the hero's, shifted, on the same facet -- or leaves on its
+        own, and then the operator is sampled afresh at that lane's wavelength.
+        Both are draws, not weights, so the lanes' throughputs are unchanged.
+        """
+        rows = torch.as_tensor(rows)
+        facet = prediction['exit_facet'][rows]
+        position, direction = prediction['exit_position'][rows], prediction['exit_direction'][rows]
+        y = hero_coordinates(model, facet, position, direction)
+        wavelength = torch.tensor([float(state[1].wavelengths[k])
+                                   for state in group for k in range(1, 4)])
+        x = inputs.repeat_interleave(3, 0)
+        shifted = dispersion.sample(x, facet.repeat_interleave(3), y.repeat_interleave(3, 0),
+                                    wavelength, generator)
+        own = x.clone()
+        own[:, 9] = (wavelength - 595)/235
+        independent = model.sample(own, generator, deterministic=deterministic_exit)
+        stats['dispersion_lanes'] += 3*len(group)
+        stats['dispersion_stays'] += int(shifted['stays'].sum())
+        stats['dispersion_splits'] += int((~shifted['stays']).sum())
+        survivors = []
+        for g, state in enumerate(group):
+            beta, template = state[2], state[1]
+            out = exit_ray(template, int(facet[g]), position[g].numpy(), direction[g].numpy())
+            if out is None:
+                stats['predicted_reentry'] += 1
+            else:
+                state[1], state[2], state[4], state[5] = out, beta*lane_masks[0], True, 0
+                survivors.append(state)
+            for k in range(1, 4):
+                j = 3*g + k - 1
+                if bool(shifted['stays'][j]):
+                    lane_out = exit_ray(template, int(facet[g]), shifted['exit_position'][j].numpy(),
+                                        shifted['exit_direction'][j].numpy())
+                elif bool(independent['escaped'][j]):
+                    stats['dispersion_split_escaped'] += 1
+                    lane_out = exit_ray(template, int(independent['exit_facet'][j]),
+                                        independent['exit_position'][j].numpy(),
+                                        independent['exit_direction'][j].numpy())
+                else:
+                    continue
+                if lane_out is None:
+                    stats['dispersion_lane_reentry'] += 1
+                    continue
+                child = [state[0], lane_out, beta*lane_masks[k], mi.Spectrum(0.), True, k]
+                spawned.append(child)
+                survivors.append(child)
+        return survivors
+
     total = width*height*spp
     for start in range(0, total, batch_size):
         states = []
@@ -132,9 +218,16 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
             ray, sensor_weight = sensor.sample_ray(0., wavelength_sample,
                 mi.Point2f((x+rng.random())/width, (y+rng.random())/height), mi.Point2f(.5))
             # Trace one hero wavelength. Sensor weights retain its wavelength PDF.
-            beta = sensor_weight * mi.Spectrum([4.,0.,0.,0.])
-            states.append([pixel, ray, beta, mi.Spectrum(0.), False])
+            # With a dispersion head all four lanes travel at weight one, which
+            # the lane average in spectrum_to_srgb makes the same estimator.
+            # The last field is the lane a path carries, or -1 for all four.
+            if dispersion is None:
+                beta = sensor_weight * mi.Spectrum([4.,0.,0.,0.])
+                states.append([pixel, ray, beta, mi.Spectrum(0.), False, 0])
+            else:
+                states.append([pixel, ray, sensor_weight*mi.Spectrum(1.), mi.Spectrum(0.), False, -1])
         active = states
+        spawned = []
         for step in range(scene_depth):
             next_active, pending, features, oracle = [], [], [], []
             for state in active:
@@ -155,9 +248,21 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                     if si.wi.z <= 0:
                         stats['inside_scene_hit'] += 1
                         continue
-                    eta = eta_at(float(ray.wavelengths[0]), metadata)
+                    lane = state[5]
+                    hero = max(lane, 0)
+                    eta = eta_at(float(ray.wavelengths[hero]), metadata)
                     f, _, _, _ = mi.fresnel(float(si.wi.z), eta)
-                    if rng.random() < f:
+                    reflect = rng.random() < f
+                    if lane < 0:
+                        # All lanes follow the hero's decision, each reweighted
+                        # by its own probability of that decision over the hero's.
+                        ratios = []
+                        for k in range(4):
+                            fk = float(mi.fresnel(float(si.wi.z),
+                                                  eta_at(float(ray.wavelengths[k]), metadata))[0])
+                            ratios.append(fk/f if reflect else (1-fk)/(1-f))
+                        state[2] = state[2]*mi.Spectrum(ratios)
+                    if reflect:
                         state[1] = si.spawn_ray(dr.normalize(si.to_world(mi.reflect(si.wi))))
                         next_active.append(state)
                     elif mode == 'analytic':
@@ -180,7 +285,7 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                             d_q = inverse_rotation @ d_q
                             n_q = inverse_rotation @ n_q
                         features.append(list(p_q/checkpoint['input_radius'])+
-                                        list(d_q)+list(n_q)+[(float(ray.wavelengths[0])-595)/235])
+                                        list(d_q)+list(n_q)+[(float(ray.wavelengths[hero])-595)/235])
                         pending.append(state)
                         if oracle_facet:
                             # Trace the true journey purely to learn which
@@ -213,39 +318,32 @@ def render(scene, stone, mesh, model, checkpoint, width, height, spp, seed,
                     from neural.boundary_prior import sample_mixture
                     prediction = sample_mixture(model, prior, inputs, prior_fraction, generator)
                 stats['neural_queries'] += len(pending)
+                spread = []
                 for i, state in enumerate(pending):
                     if not bool(prediction['escaped'][i]):
                         continue
                     stats['neural_escaped'] += 1
-                    facet = int(prediction['exit_facet'][i])
-                    # spawn_ray uses Mitsuba's surface-offset convention.
-                    exit_si = mi.SurfaceInteraction3f()
-                    # Predictions come back in object space; rotate them out.
-                    exit_p = prediction['exit_position'][i].numpy()
-                    exit_n = model.normal[facet].numpy()
-                    exit_d = prediction['exit_direction'][i].numpy()
-                    if rotation is not None:
-                        exit_p = forward_rotation @ exit_p
-                        exit_n = forward_rotation @ exit_n
-                        exit_d = forward_rotation @ exit_d
-                    exit_si.p = mi.Point3f(exit_p)
-                    exit_si.n = mi.Normal3f(exit_n)
-                    exit_si.wavelengths = state[1].wavelengths
-                    exit_si.time = state[1].time
-                    out = exit_si.spawn_ray(mi.Vector3f(exit_d))
-                    if stone.ray_test(out):
-                        # Do not tunnel through the stone or invent a corrected exit.
+                    if state[5] < 0:
+                        spread.append(i)
+                        continue
+                    out = exit_ray(state[1], int(prediction['exit_facet'][i]),
+                                   prediction['exit_position'][i].numpy(),
+                                   prediction['exit_direction'][i].numpy())
+                    if out is None:
                         stats['predicted_reentry'] += 1
                         continue
                     state[1] = out
                     state[2] *= float(prediction['throughput'][i])
                     state[4] = True
                     next_active.append(state)
+                if spread:
+                    next_active += disperse([pending[i] for i in spread], inputs[spread],
+                                            prediction, spread, spawned)
             active = next_active
             if not active:
                 break
         stats['scene_truncated'] += len(active)
-        for pixel, ray, _, radiance, used_operator in states:
+        for pixel, ray, _, radiance, used_operator, _ in states + spawned:
             value = np.asarray(mi.spectrum_to_srgb(radiance, ray.wavelengths))
             image[pixel] += value
             (operator_image if used_operator else untouched_image)[pixel] += value
@@ -299,6 +397,11 @@ def main():
                              'each sample over neighbouring pixels and looks markedly '
                              'cleaner, but correlates adjacent pixels, so do not mix '
                              'filters within one comparison.')
+    parser.add_argument('--dispersion', type=Path,
+                        help='Learned dispersion head (train_dispersion.py). Neural mode '
+                             'only: traces all four spectral lanes and lets the head '
+                             'decide per lane whether it follows the hero\'s route with '
+                             'a shifted exit or leaves independently.')
     parser.add_argument('--rdm_prior', type=Path)
     parser.add_argument('--prior_fraction', type=float, default=.25)
     parser.add_argument('--split_components', action='store_true',
@@ -310,6 +413,9 @@ def main():
         parser.error('--prior_fraction must be in [0,1)')
     if args.mode == 'analytic' and args.rdm_prior is not None:
         parser.error('RDM prior applies only to neural mode')
+    if args.dispersion is not None and (args.mode != 'neural' or args.rdm_prior is not None
+                                        or args.oracle_facet):
+        parser.error('--dispersion needs plain neural mode (no RDM prior, no oracle facet)')
     if min(args.width,args.height,args.spp,args.scene_depth,args.batch_size) < 1:
         parser.error('Image dimensions, spp, depths and batch size must be positive')
     if args.output_dir.exists():
@@ -334,11 +440,14 @@ def main():
             if info.get('schema_version') != 1 or info['model_sha256'] != hashlib.sha256(args.model.read_bytes()).hexdigest():
                 raise ValueError('RDM prior does not match this checkpoint')
             prior = BoundaryPrior(archive['pmf'], info['theta_bins'], info['phi_bins'], model)
+    dispersion = None
+    if args.dispersion is not None:
+        dispersion, _ = load_dispersion(args.dispersion, checkpoint)
     begin = time.perf_counter()
     image, stats, components = render(scene,stone,mesh,model,checkpoint,args.width,args.height,args.spp,args.seed,
                           args.mode,args.scene_depth,args.batch_size,prior,args.prior_fraction,
                           args.stratify_wavelength,rotation,args.deterministic_exit,
-                          args.oracle_facet)
+                          args.oracle_facet, dispersion)
     if not np.isfinite(image).all():
         raise RuntimeError('Nonfinite render')
     frames = args.output_dir/'frames'
@@ -357,6 +466,9 @@ def main():
                   deterministic_exit=args.deterministic_exit,
                   oracle_facet=args.oracle_facet,
                   stratify_wavelength=args.stratify_wavelength,
+                  dispersion=str(args.dispersion) if dispersion is not None else None,
+                  dispersion_sha256=(hashlib.sha256(args.dispersion.read_bytes()).hexdigest()
+                                     if dispersion is not None else None),
                   internal_max_depth=m['max_depth'],seconds=time.perf_counter()-begin,
                   stats=stats,geometry_sha256=m['geometry_sha256'],
                   checkpoint_sha256=hashlib.sha256(args.model.read_bytes()).hexdigest(),

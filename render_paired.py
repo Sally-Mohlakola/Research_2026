@@ -40,7 +40,7 @@ def run(command, log):
 
 def render_task(job):
     (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
-     logs, split, rfilter, deterministic, oracle, rotation, stratify) = job
+     logs, split, rfilter, deterministic, oracle, rotation, stratify, dispersion) = job
     command = ['render_boundary.py', '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
@@ -55,6 +55,8 @@ def render_task(job):
         command.append('--split_components')
     if stratify:
         command.append('--stratify_wavelength')
+    if dispersion and mode == 'neural':
+        command += ['--dispersion', dispersion]
     run(command, logs/('render_%s_s%s.log' % (mode, seed)))
     return mode, seed
 
@@ -89,6 +91,9 @@ def main():
                         help='Neural renders take the exit facet and escape decision '
                              'from the analytic trace; an upper bound isolating branch '
                              'selection, not a usable renderer.')
+    parser.add_argument('--dispersion', type=Path,
+                        help='Learned dispersion head for the neural renders '
+                             '(train_dispersion.py). The analytic renders are unchanged.')
     parser.add_argument('--stratify_wavelength', action='store_true',
                         help='Spread the hero wavelengths evenly over the '
                              'spectrum. Unbiased and free; reduces the chromatic '
@@ -126,7 +131,8 @@ def main():
             jobs.append((directory, args.model, mode, args.azimuth, seed,
                          args.width, args.height, args.spp, args.scene_depth, logs,
                          args.split_components, args.rfilter, args.deterministic_exit,
-                         args.oracle_facet, args.rotation_deg, args.stratify_wavelength))
+                         args.oracle_facet, args.rotation_deg, args.stratify_wavelength,
+                         args.dispersion))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -157,6 +163,7 @@ def main():
                    deterministic_exit=args.deterministic_exit,
                    oracle_facet=args.oracle_facet,
                    stratify_wavelength=args.stratify_wavelength,
+                   dispersion=str(args.dispersion) if args.dispersion else None,
                    rotation_deg=args.rotation_deg,
                    render_seconds=render_seconds, merged=merged,
                    result_images={m: str(p) for m, p in results.items()},
