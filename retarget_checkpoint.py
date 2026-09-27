@@ -60,6 +60,29 @@ def greedy_assignment(new_normals, old_normals):
     return permutation
 
 
+def resized_assignment(new_normals, old_normals):
+    """Correspondence between meshes with different face counts.
+
+    As many facets as both meshes share are paired one-to-one by the greedy
+    assignment; each surplus target facet then reuses the old facet it is best
+    aligned with. When the target has fewer facets, the unmatched old classes
+    simply drop out of the softmax. This is a probe of transfer, not a claim
+    that the facets correspond: the facet head was trained on the source mesh.
+    """
+    similarity = new_normals @ old_normals.T
+    shared = min(len(new_normals), len(old_normals))
+    if len(new_normals) <= len(old_normals):
+        # Pick the old facets best aligned with some new one, then pair within them.
+        return greedy_assignment(new_normals, old_normals)
+    # Pair the best-aligned new facets first; the rest reuse their nearest old facet.
+    first = np.argsort(-similarity.max(1))[:shared]
+    permutation = np.full(len(new_normals), -1, dtype=np.int64)
+    permutation[first] = greedy_assignment(new_normals[first], old_normals)
+    rest = permutation < 0
+    permutation[rest] = similarity[rest].argmax(1)
+    return permutation
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,6 +92,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='Retargeted checkpoint')
     parser.add_argument('--correspondence', choices=('normal', 'identity'), default='normal',
                         help='How facet classes map from the old mesh to the new one')
+    parser.add_argument('--allow_resize', action='store_true',
+                        help='Allow a target with a different face count. Surplus '
+                             'target facets share the logit of their best-aligned '
+                             'source facet, split so the shared mass is not '
+                             'double-counted; missing ones drop out of the softmax.')
     args = parser.parse_args()
 
     checkpoint = torch.load(args.model, map_location='cpu', weights_only=True)
@@ -77,15 +105,21 @@ def main():
     parameters = get_diamond_parameters(args.diamond_name)
     vertices, faces = make_diamond(parameters)
     old_faces = checkpoint['faces'].numpy()
-    if len(faces) != len(old_faces):
+    if len(faces) != len(old_faces) and not args.allow_resize:
         raise ValueError('Target has %d faces, source head expects %d. The facet '
                          'categorical cannot be resized without retraining; pick a '
-                         'tessellation with a matching face count.'
+                         'tessellation with a matching face count, or pass '
+                         '--allow_resize.'
                          % (len(faces), len(old_faces)))
 
     triangles, tangent, bitangent, normal = frames(vertices, faces)
     old_normal = checkpoint['state_dict']['normal'].numpy()
-    if args.correspondence == 'identity':
+    resized = len(faces) != len(old_faces)
+    if resized:
+        if args.correspondence == 'identity':
+            parser.error('--allow_resize needs --correspondence normal')
+        permutation = resized_assignment(normal, old_normal)
+    elif args.correspondence == 'identity':
         permutation = np.arange(len(faces))
     else:
         permutation = greedy_assignment(normal, old_normal)
@@ -98,6 +132,10 @@ def main():
     index = torch.as_tensor(permutation, dtype=torch.long)
     state['facet.weight'] = state['facet.weight'][index].clone()
     state['facet.bias'] = state['facet.bias'][index].clone()
+    # A source facet reused by k target facets splits its probability k ways,
+    # so the surplus facets do not inflate the direction they inherit.
+    multiplicity = np.bincount(permutation, minlength=len(old_faces))[permutation]
+    state['facet.bias'] -= torch.as_tensor(np.log(multiplicity), dtype=torch.float32)
     state['embedding.weight'] = state['embedding.weight'][index].clone()
 
     radius = float(np.linalg.norm(vertices, axis=1).max())
@@ -120,7 +158,9 @@ def main():
         source_sha256=hashlib.sha256(args.model.read_bytes()).hexdigest(),
         source_diamond=checkpoint['metadata']['diamond_name'],
         target_diamond=args.diamond_name,
-        correspondence=args.correspondence,
+        correspondence=args.correspondence + (' (resized %d -> %d faces)'
+                                              % (len(old_faces), len(faces))
+                                              if resized else ''),
         permutation=permutation.tolist(),
         mean_alignment_deg=float(alignment.mean()),
         median_alignment_deg=float(np.median(alignment)),

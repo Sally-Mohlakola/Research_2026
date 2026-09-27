@@ -1,0 +1,42 @@
+8 renders: analytic+neural x 4 seeds at 32 spp each (128 effective spp), 4 workers
+  [1/8] analytic seed 101
+  [2/8] analytic seed 102
+  [3/8] analytic seed 103
+  [4/8] analytic seed 104
+  [5/8] neural seed 101
+  [6/8] neural seed 102
+  [7/8] neural seed 103
+  [8/8] neural seed 104
+merging analytic
+merging neural
+evaluating
+computing stone mask at azimuth 0
+
+azimuth 0, 512x512, 128 effective spp, 134158 stone pixels
+
+image shape                        analytic         neural
+mean                              0.0052536       0.004256
+contrast                             3.7809         1.5288
+peak_over_mean                       133.64         48.161
+flash_fraction                    0.0064849      0.0035853
+
+agreement (half-split)               neural    noise floor          ratio
+relative_rmse                        3.9023         1.1399          3.423
+correlation                        0.069595        0.95651              -
+highlight_overlap_top1pct           0.18629         0.7772         0.2397
+relative_energy_error              -0.18793      0.0057375          32.75
+chromaticity_error                  0.33914        0.24755           1.37
+
+Wrote renders\gia_from_pear\evaluation.json
+
+
+rendered in 2775 s
+
+FINISHED IMAGES (128 effective spp):
+  analytic renders\gia_from_pear\analytic_az000.png
+           mean luminance 0.00306341
+  neural   renders\gia_from_pear\neural_az000.png
+           mean luminance 0.0025592
+
+The per-seed renders under <mode>/s<seed>/ are ingredients at 32 spp each,
+not results. Use the files listed above.

@@ -1,0 +1,19 @@
+8 renders: neural x 8 seeds at 32 spp each (256 effective spp), 4 workers
+  [1/8] neural seed 101
+  [2/8] neural seed 102
+  [3/8] neural seed 103
+  [4/8] neural seed 104
+  [5/8] neural seed 105
+  [6/8] neural seed 106
+  [7/8] neural seed 107
+  [8/8] neural seed 108
+merging neural
+
+rendered in 12935 s
+
+FINISHED IMAGES (256 effective spp):
+  neural   renders\gia_from_pear_256\neural_az000.png
+           mean luminance 0.00256145
+
+The per-seed renders under <mode>/s<seed>/ are ingredients at 32 spp each,
+not results. Use the files listed above.
