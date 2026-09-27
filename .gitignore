@@ -7,6 +7,6 @@ __pycache__/
 
 ground_truth/diamond_animation/
 ground_truth/*.ply
-
+figures/plots/
 # render and training logs
 *.log

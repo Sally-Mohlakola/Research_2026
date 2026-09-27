@@ -23,6 +23,20 @@ DIAMOND_VARIANTS= {
         int_ior=2.419,
         ext_ior=1.000277,
     ),
+    # The GIA round with slightly different facet proportions, all still within
+    # GIA "Excellent" ranges: 1.5 deg shallower crown, 0.45 deg steeper
+    # pavilion, 3% larger table, slightly larger culet. Same 8-fold layout and
+    # 64 triangles, so it tests transfer to a near-identical but unseen stone.
+    "round_diamond_gia_varied": dict(
+        girdle_radius=1.0,
+        crown_angle_deg=33.0,
+        pavilion_angle_deg=41.2,
+        table_frac=0.59,
+        num_main_facets=8,
+        culet_radius=0.03,
+        int_ior=2.419,
+        ext_ior=1.000277,
+    ),
     # Idealized sharp-culet version of the standard cut, useful for
     # comparing against round_brilliant_ideal to see how much the small
     # flat culet facet patch actually changes the RDM.

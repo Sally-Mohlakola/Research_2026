@@ -126,6 +126,63 @@ def edge_diagnostic(vertices, faces, path, title):
     print('  wrote %s' % path)
 
 
+def edge_comparison(meshes, path, title):
+    """Two or more meshes overlaid on the same axes, one colour each.
+
+    The left panel uses edge_diagnostic's 3D view; the right is side-on, where
+    changes of crown and pavilion angle show directly as changes of slope.
+    Each legend entry carries that mesh's watertightness verdict, so the figure
+    is still a validation record and not only an illustration.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    colours = ('#2b5d9e', '#c0392b', '#2e8b57', '#8e44ad')
+    figure = plt.figure(figsize=(15, 7))
+    perspective = figure.add_subplot(121, projection='3d')
+    profile = figure.add_subplot(122)
+    extent = max(float(np.abs(v).max()) for _, v, _ in meshes)*1.05
+    handles = []
+    for (name, vertices, faces), colour in zip(meshes, colours):
+        edges = {(min(a, b), max(a, b)) for face in faces
+                 for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0]))}
+        for a, b in edges:
+            p, q = vertices[a], vertices[b]
+            perspective.plot3D([p[0], q[0]], [p[1], q[1]], [p[2], q[2]], color=colour,
+                               alpha=0.55, linewidth=1.0)
+            # Side-on: only edges on the silhouette's near half, so the outline is readable.
+            if p[1] <= 1e-6 and q[1] <= 1e-6:
+                profile.plot([p[0], q[0]], [p[2], q[2]], color=colour, alpha=0.8, linewidth=1.2)
+        result = validate(vertices, faces)
+        sound = result['boundary_edges'] == 0 and result['non_manifold_edges'] == 0
+        handles.append(Line2D([], [], color=colour, linewidth=2,
+                              label='%s: %d vertices, %d faces, %s'
+                                    % (name, len(vertices), len(faces),
+                                       'watertight' if sound else 'NOT watertight')))
+    perspective.set_xlim(-extent, extent)
+    perspective.set_ylim(-extent, extent)
+    perspective.set_zlim(-extent, extent)
+    perspective.set_box_aspect((1, 1, 1))
+    perspective.set_xlabel('X')
+    perspective.set_ylabel('Y')
+    perspective.set_zlabel('Z')
+    perspective.view_init(elev=22, azim=-60)
+    perspective.set_title('3D view (as in the validation plots)', fontsize=11)
+    profile.set_aspect('equal')
+    profile.set_xlabel('X')
+    profile.set_ylabel('Z')
+    profile.grid(alpha=0.3)
+    profile.set_title('side view (front half): crown above, pavilion below', fontsize=11)
+    figure.legend(handles=handles, loc='lower center', ncol=len(meshes), fontsize=10)
+    figure.suptitle(title, fontsize=13)
+    figure.tight_layout(rect=(0, 0.07, 1, 0.95))
+    figure.savefig(path, dpi=150, facecolor='white')
+    plt.close(figure)
+    print('  wrote %s' % path)
+
+
 def step_counts(spec):
     """Parse a 'crown,pavilion' step specification."""
     try:
@@ -153,7 +210,24 @@ def main():
     parser.add_argument('--step_png_steps', default='3,3',
                         metavar='CROWN,PAVILION',
                         help='Step counts used for the step diagnostic image')
+    parser.add_argument('--compare', nargs='+', metavar='VARIANT',
+                        help='Instead of the sweep: validate these config/parameters.py '
+                             'variants and overlay them on one set of axes')
+    parser.add_argument('--compare_png', type=Path,
+                        default=Path(__file__).with_name('comparison_edges.png'),
+                        help='Output image for --compare')
     args = parser.parse_args()
+
+    if args.compare:
+        from config.parameters import get_diamond_parameters
+        from ground_truth.cuts import make_diamond
+        meshes = []
+        for name in args.compare:
+            vertices, faces = make_diamond(get_diamond_parameters(name))
+            report(name, validate(vertices, faces))
+            meshes.append((name, vertices, faces))
+        edge_comparison(meshes, args.compare_png, ' vs '.join(args.compare))
+        return
 
     print('='*64)
     print('DIAMOND MESH VALIDATION')
