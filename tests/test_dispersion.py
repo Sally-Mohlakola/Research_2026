@@ -55,19 +55,19 @@ class DispersionRenderTests(unittest.TestCase):
         # stays, splits or reflects at the first surface, must still carry one.
         # This checks the lane masks, the Fresnel ratios and the lane average.
         script = r"""
-import pipeline.render_boundary as rb
+import pipeline.render_learned_interior as rb
 import mitsuba as mi
 import numpy as np
 import torch
 from ground_truth.brilliant_geometry import make_round_brilliant
 from config.parameters import get_diamond_parameters
-from neural.boundary_model import BoundaryModel
+from neural.learned_interior_model import LearnedInteriorModel
 from neural.dispersion_model import DispersionModel
 
 torch.set_num_threads(2)
 torch.manual_seed(5)
 v,f=make_round_brilliant()
-model=BoundaryModel(v,f)
+model=LearnedInteriorModel(v,f)
 checkpoint=dict(vertices=torch.from_numpy(v),faces=torch.from_numpy(f.astype(np.int64)),
                 input_radius=float(np.linalg.norm(v,axis=1).max()),
                 metadata=dict(parameters=get_diamond_parameters('round_diamond_gia'),dispersion=True,max_depth=128))
