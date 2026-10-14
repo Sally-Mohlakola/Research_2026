@@ -14,3 +14,6 @@ figures/plots/
 # test harness outputs and its local reference (machine-specific)
 tests/regression/output/
 tests/regression/reference/
+
+cluster/
+figures/

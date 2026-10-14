@@ -39,8 +39,7 @@ import drjit as dr
 import numpy as np
 from config import variant
 
-# Respect a variant the caller has already chosen (ground_truth/diamond.py
-# runs under scalar_spectral) instead of forcing the configured one.
+
 if mi.variant() is None:
     mi.set_variant(variant)
 
@@ -86,28 +85,10 @@ REFERENCE_IOR = float(diamond_ior(REFERENCE_WAVELENGTH))
 
 
 def hero_wavelength(si):
-    """
-    The wavelength a dispersive path follows.
-
-    Mitsuba carries MI_WAVELENGTH_SAMPLES (4) wavelengths per ray. A
-    dispersive refraction would send each of them in a different direction,
-    but a ray has one direction, so exactly one wavelength can survive the
-    event. Channel 0 is the "hero": Mitsuba's `sample_shifted` draws it
-    uniformly over the full spectral range and derives the other three by
-    rotation, so channel 0 on its own is an unbiased uniform sample of the
-    spectrum -- which is what makes it valid to keep it and drop the rest.
-    """
     return si.wavelengths[0]
 
 
 def hero_eta(si, int_ior, ext_ior, dispersion=True):
-    """
-    Relative IOR to use for a refraction event, as a plain Float.
-
-    Under dispersion this is n(hero wavelength) / ext_ior, so each ray bends
-    by its own wavelength's amount and the spectrum fans out across the
-    stone. Otherwise it is the fixed achromatic ratio.
-    """
     if IS_SPECTRAL and dispersion:
         return diamond_ior(hero_wavelength(si)) / ext_ior
     return mi.Float(int_ior / ext_ior)

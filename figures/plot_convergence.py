@@ -99,7 +99,7 @@ def operators(output):
         for col in range(3):
             axes[row, col].set_xlabel('epoch')
             axes[row, col].grid(alpha=.3)
-    fig.suptitle('Validation traces of the boundary operators (dots mark the selected epoch)', fontsize=13)
+    fig.suptitle('Validation traces of the learned interior operators (dots mark the selected epoch)', fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, .97))
     fig.savefig(output, dpi=130, facecolor='white')
     return used

@@ -1,7 +1,7 @@
 """Nearest-neighbour oracle: is the exit predictable from the entry state at all?
 
 Every architecture experiment so far has asked how well a network learns the
-boundary operator. This asks a prior question. Given the exact entry state of a
+learned interior operator. This asks a prior question. Given the exact entry state of a
 held-out path, look up the most similar entry states in the training pool and
 take their exits. No training, no capacity, no optimisation -- just the data
 answering whether the mapping it encodes is a function of the conditioning.
@@ -47,7 +47,7 @@ from pathlib import Path
 
 import torch
 
-from neural.boundary_data import load_encoded_pool
+from neural.learned_interior_data import load_encoded_pool
 
 def load_pool(path):
     """Escaped records only: model inputs, true exit facet and exit direction."""

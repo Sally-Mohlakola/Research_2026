@@ -94,11 +94,11 @@ prior_fraction: 0.0`: `camera_paired`, `det_exit`, `clone_paired`,
 them ran through, exposes no `--rdm_prior` option at all, so the RDM was not
 reachable from the path that produced the results.
 
-**Replace with**: the work is a position-conditioned boundary transport
+**Replace with**: the work is a position-conditioned interior transport
 operator. The RDM is its ancestor and its baseline, not a component. The pivot
 is legitimate and documented — `NEURAL_DIAMOND_NEXT.md` line 10 records the
 diagnosis ("the histogram drops entry and exit positions") and line 17 the
-response ("build a position- and wavelength-conditioned boundary transport
+response ("build a position- and wavelength-conditioned interior transport
 model") — but the title promises a method that was not built, and should change.
 
 ---

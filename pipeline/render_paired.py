@@ -1,46 +1,24 @@
-"""One command for a paired neural/analytic comparison at high sample counts.
-
-Renders both modes over several independent seeds in parallel, merges each mode
-into a single low-variance image, and runs the masked render evaluation. This
-replaces the manual sequence of launching renders, waiting, merging each set and
-then evaluating.
-
-Averaging K independent renders of S samples per pixel is exactly the same
-estimator as one render of K*S samples per pixel when the seeds differ, so the
-seed fan-out is a parallel route to a high sample count, not an approximation.
-
-Stages run as subprocesses rather than imports on purpose: the Mitsuba variant
-is process-global, and these tools do not agree on one. render_boundary and
-evaluate_render need scalar_spectral while merge_renders uses scalar_rgb, so
-importing them into a single process would fight over the variant.
-
-It deliberately does not expose render_boundary's --rdm_prior. The RDM prior
-was measured not to help (FINDINGS.md, "The RDM does not help in either
-available role"), so every paired result in this project is RDM-free, and
-leaving the option out keeps it that way. Use render_boundary.py directly to
-render with the prior.
-"""
 import sys
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))  # the repo root, for config/, neural/ and the stage folders
+sys.path.insert(0, str(REPO))
+
 import argparse
 import json
 import subprocess
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 MODES = ('analytic', 'neural')
 
 
+# run one stage as its own process, since each stage needs a different mitsuba variant, and keep its log
 def run(command, log):
-    """Run one stage, capturing output to a log file beside the results."""
     log.parent.mkdir(parents=True, exist_ok=True)
     done = subprocess.run([sys.executable, '-B'] + [str(c) for c in command],
                           capture_output=True, text=True)
     log.write_text((done.stdout or '') + (done.stderr or ''), encoding='utf-8')
+
     if done.returncode != 0:
         raise RuntimeError('Stage failed (%s); see %s\n%s'
                            % (' '.join(str(c) for c in command[:2]), log,
@@ -48,13 +26,15 @@ def run(command, log):
     return done.stdout
 
 
+# render one seed in one mode with render_learned_interior
 def render_task(job):
     (directory, model, mode, azimuth, seed, width, height, spp, scene_depth,
-     logs, split, rfilter, deterministic, oracle, rotation, stratify, dispersion) = job
-    command = [str(REPO/'pipeline'/'render_boundary.py'), '--model', model, '--output_dir', directory,
+     logs, split, rfilter, deterministic, oracle, rotation, stratify, dispersion, camera) = job
+
+    command = [str(REPO/'pipeline'/'render_learned_interior.py'), '--model', model, '--output_dir', directory,
                '--mode', mode, '--azimuth', '%g' % azimuth, '--seed', seed,
                '--width', width, '--height', height, '--spp', spp,
-               '--scene_depth', scene_depth, '--rfilter', rfilter]
+               '--scene_depth', scene_depth, '--rfilter', rfilter, '--camera', camera]
     if deterministic:
         command.append('--deterministic_exit')
     if rotation:
@@ -67,16 +47,19 @@ def render_task(job):
         command.append('--stratify_wavelength')
     if dispersion and mode == 'neural':
         command += ['--dispersion', dispersion]
+
     run(command, logs/('render_%s_s%s.log' % (mode, seed)))
     return mode, seed
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+# the options, every one applied to both modes so the comparison stays paired
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Paired neural and analytic renders over several seeds, merged and evaluated.')
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--output_dir', type=Path, required=True)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--camera', choices=('studio', 'spin'), default='studio',
+                        help='studio (the training view) or the side view of ground_truth/diamond.py')
     parser.add_argument('--rotation_deg', type=float, nargs=3, metavar=('X', 'Y', 'Z'),
                         help='Tumble the stone to this pose (degrees, eval.py convention)')
     parser.add_argument('--width', type=int, default=728)
@@ -132,6 +115,13 @@ def main():
     if args.output_dir.exists():
         raise FileExistsError('Refusing to replace %s' % args.output_dir)
 
+    return args
+
+
+# render every seed in both modes in parallel, merge each mode into one image, then compare the two
+def main():
+    args = parse_arguments()
+
     logs = args.output_dir/'logs'
     jobs, directories = [], {mode: [] for mode in args.modes}
     for mode in args.modes:
@@ -142,7 +132,7 @@ def main():
                          args.width, args.height, args.spp, args.scene_depth, logs,
                          args.split_components, args.rfilter, args.deterministic_exit,
                          args.oracle_facet, args.rotation_deg, args.stratify_wavelength,
-                         args.dispersion))
+                         args.dispersion, args.camera))
 
     effective = args.spp*len(args.seeds)
     print('%d renders: %s x %d seeds at %d spp each (%d effective spp), %d workers'
@@ -166,7 +156,7 @@ def main():
              '--output', output], logs/('merge_%s.log' % mode))
         merged[mode] = json.loads(output.with_suffix('.json').read_text())
 
-    summary = dict(model=str(args.model), azimuth=args.azimuth,
+    summary = dict(model=str(args.model), azimuth=args.azimuth, camera=args.camera,
                    width=args.width, height=args.height, spp_each=args.spp,
                    seeds=args.seeds, effective_spp=effective,
                    modes=args.modes, workers=args.workers, rfilter=args.rfilter,
@@ -193,6 +183,7 @@ def main():
 
     (args.output_dir/'paired.json').write_text(json.dumps(summary, indent=2),
                                                encoding='utf-8')
+
     print('\nrendered in %.0f s' % render_seconds)
     print('\nFINISHED IMAGES (%d effective spp):' % effective)
     for mode in args.modes:

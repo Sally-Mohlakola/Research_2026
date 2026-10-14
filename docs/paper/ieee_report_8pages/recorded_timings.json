@@ -1,0 +1,86 @@
+{
+  "gia_mixture": {
+    "analytic": {
+      "median_seconds": 656.8175757499994,
+      "min_seconds": 653.0462703000012,
+      "max_seconds": 665.4757878000019,
+      "samples_per_pixel": 32,
+      "runs": 4
+    },
+    "neural": {
+      "median_seconds": 1268.5856432999972,
+      "min_seconds": 1267.6592337999973,
+      "max_seconds": 1269.7066057999982,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "gia_clone": {
+    "neural": {
+      "median_seconds": 1291.6211399999884,
+      "min_seconds": 1285.5093830999976,
+      "max_seconds": 1293.9652472999878,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "gia_clone_deep": {
+    "neural": {
+      "median_seconds": 766.6816692500142,
+      "min_seconds": 764.8127366999979,
+      "max_seconds": 773.3845961999905,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "pear_learned": {
+    "analytic": {
+      "median_seconds": 484.83268634999695,
+      "min_seconds": 480.63451969999005,
+      "max_seconds": 494.1086438999919,
+      "samples_per_pixel": 32,
+      "runs": 4
+    },
+    "neural": {
+      "median_seconds": 955.2464263500151,
+      "min_seconds": 939.5293930000043,
+      "max_seconds": 961.111702299997,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "pear_clone_deep": {
+    "neural": {
+      "median_seconds": 725.1062681500043,
+      "min_seconds": 720.187177499989,
+      "max_seconds": 731.9295353999769,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "step_learned": {
+    "analytic": {
+      "median_seconds": 496.7020061999938,
+      "min_seconds": 491.59554179999395,
+      "max_seconds": 498.0351531000051,
+      "samples_per_pixel": 32,
+      "runs": 4
+    },
+    "neural": {
+      "median_seconds": 746.2510206000152,
+      "min_seconds": 737.9353266999824,
+      "max_seconds": 752.3144771999796,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  },
+  "step_clone_deep": {
+    "neural": {
+      "median_seconds": 655.2879400000093,
+      "min_seconds": 649.5717304999998,
+      "max_seconds": 656.5117287000176,
+      "samples_per_pixel": 32,
+      "runs": 4
+    }
+  }
+}

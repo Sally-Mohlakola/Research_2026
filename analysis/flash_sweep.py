@@ -32,8 +32,8 @@ import config  # resolve runtime before importing Mitsuba
 import mitsuba as mi
 
 mi.set_variant('scalar_spectral')
-from pipeline.render_boundary import make_scene
-from neural.boundary_model import load_model
+from pipeline.render_learned_interior import make_scene
+from neural.learned_interior_model import load_model
 
 LUMINANCE = np.array([.2126, .7152, .0722])
 
@@ -69,7 +69,7 @@ def frame_statistics(image, mask, thresholds):
 
 def run_render(task):
     directory, model, mode, azimuth, seed, width, height, spp, scene_depth = task
-    command = [sys.executable, '-B', str(REPO/'pipeline'/'render_boundary.py'), '--model', str(model),
+    command = [sys.executable, '-B', str(REPO/'pipeline'/'render_learned_interior.py'), '--model', str(model),
                '--output_dir', str(directory), '--mode', mode,
                '--azimuth', '%g' % azimuth, '--seed', str(seed),
                '--width', str(width), '--height', str(height), '--spp', str(spp),

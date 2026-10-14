@@ -1,4 +1,4 @@
-"""Masked render-space comparison of a learned boundary operator against analytic transport.
+"""Masked render-space comparison of a learned interior operator against analytic transport.
 
 Every statistic is computed on linear EXR values over primary-hit stone pixels
 only, so background and ground plane cannot dilute an error.
@@ -28,8 +28,9 @@ import config  # resolve runtime before importing Mitsuba
 import mitsuba as mi
 
 mi.set_variant('scalar_spectral')
-from pipeline.render_boundary import make_scene, tumble_matrix
-from neural.boundary_model import load_model
+from pipeline.render_learned_interior import make_scene, tumble_matrix
+from neural.learned_interior_model import load_model
+from utils.run_record import geometric_facets
 
 LUMINANCE = np.array([.2126, .7152, .0722])
 
@@ -61,20 +62,200 @@ def load_renders(directories):
     return np.stack(images), reports, stacked
 
 
-def stone_mask(checkpoint, width, height, azimuth, rotation_deg=None):
-    """Primary-hit stone pixels; `rotation_deg` matches render_boundary's tumble."""
+def stone_hits(checkpoint, width, height, azimuth, rotation_deg=None, camera='studio'):
+    """Primary-hit stone pixels and the triangle each one sees first (-1 off the stone)."""
     rotation = (None if rotation_deg is None
                 else tumble_matrix(*[math.radians(v) for v in rotation_deg]))
-    scene, _, mesh = make_scene(checkpoint, width, height, azimuth, rotation=rotation)
+    scene, _, mesh = make_scene(checkpoint, width, height, azimuth, rotation=rotation, camera=camera)
     sensor = scene.sensors()[0]
-    mask = np.zeros((height, width), dtype=bool)
+    triangle = np.full((height, width), -1, dtype=np.int64)
     for y in range(height):
         for x in range(width):
             ray, _ = sensor.sample_ray(0., .5, mi.Point2f((x+.5)/width, (y+.5)/height),
                                        mi.Point2f(.5))
             si = scene.ray_intersect(ray)
-            mask[y, x] = bool(si.is_valid()) and si.shape == mesh
-    return mask
+            if bool(si.is_valid()) and si.shape == mesh:
+                triangle[y, x] = int(si.prim_index)
+    return triangle >= 0, triangle
+
+
+def stone_mask(checkpoint, width, height, azimuth, rotation_deg=None, camera='studio'):
+    """Primary-hit stone pixels; `rotation_deg` matches render_learned_interior's tumble."""
+    return stone_hits(checkpoint, width, height, azimuth, rotation_deg, camera)[0]
+
+
+def _correlation(x, y):
+    return float(np.corrcoef(x, y)[0, 1]) if x.std() > 0 and y.std() > 0 else None
+
+
+def _ranks(values):
+    order = np.argsort(values, kind='stable')
+    ranks = np.empty(len(values))
+    ranks[order] = np.arange(len(values))
+    return ranks
+
+
+def noise_corrected(a1, a2, n1, n2):
+    """Agreement with Monte Carlo noise removed, from two independent halves per mode.
+
+    a1, a2 are analytic and n1, n2 neural values (pixels or facets) from disjoint
+    seed sets. Debiased MSE averages (n1-a1)(n2-a2): the halves' noise is
+    independent, so it cancels in expectation and what remains estimates the
+    squared difference of the converged images. Cross-half correlation pairs
+    different seeds, so noise the two modes share through common seeds cannot
+    pose as agreement; dividing by the geometric mean of each mode's split-half
+    reliability (Spearman's correction for attenuation) estimates the
+    correlation at infinite samples.
+    """
+    reference_mean = float(np.concatenate([a1, a2]).mean())
+    debiased_mse = float(((n1-a1)*(n2-a2)).mean())
+    cross = [_correlation(a1, n2), _correlation(a2, n1)]
+    cross = None if None in cross else float(np.mean(cross))
+    reliability_analytic, reliability_neural = _correlation(a1, a2), _correlation(n1, n2)
+    disattenuated = None
+    if (cross is not None and reliability_analytic is not None and reliability_neural is not None
+            and reliability_analytic > 0 and reliability_neural > 0):
+        disattenuated = cross/math.sqrt(reliability_analytic*reliability_neural)
+    debiased_rmse = math.sqrt(max(debiased_mse, 0.))
+    return dict(debiased_mse=debiased_mse,
+                debiased_rmse=debiased_rmse,
+                debiased_relative_rmse=debiased_rmse/reference_mean if reference_mean else None,
+                cross_half_correlation=cross,
+                reliability_analytic=reliability_analytic,
+                reliability_neural=reliability_neural,
+                disattenuated_correlation=disattenuated)
+
+
+def facet_means(image, triangle, facet_of_triangle, facets):
+    """Mean stone luminance seen through each geometric facet."""
+    y = image[triangle >= 0] @ LUMINANCE
+    label = facet_of_triangle[triangle[triangle >= 0]]
+    return np.array([y[label == f].mean() for f in facets])
+
+
+def facet_comparison(images, triangle, facet_of_triangle, min_pixels=20, top_fraction=.1):
+    """Compare the two modes facet by facet: which facets are lit, and how brightly.
+
+    Each facet averages every pixel it covers, so per-pixel noise largely cancels;
+    facets covering fewer than `min_pixels` pixels are left out. Every facet
+    counts once, however large.
+    """
+    label = facet_of_triangle[triangle[triangle >= 0]]
+    counts = np.bincount(label, minlength=facet_of_triangle.max()+1)
+    facets = np.flatnonzero(counts >= min_pixels)
+    a, n, a1, a2, n1, n2 = (facet_means(images[k], triangle, facet_of_triangle, facets)
+                            for k in ('analytic', 'neural', 'a1', 'a2', 'n1', 'n2'))
+    top = max(1, int(round(top_fraction*len(facets))))
+    brightest_reference = set(np.argsort(-a)[:top].tolist())
+    brightest_neural = set(np.argsort(-n)[:top].tolist())
+    reference_mean = float(a.mean())
+    rmse = float(np.sqrt(((n-a)**2).mean()))
+    result = dict(
+        triangles=int(len(facet_of_triangle)), geometric_facets=int(facet_of_triangle.max()+1),
+        visible_facets=int(len(facets)), min_pixels=min_pixels,
+        correlation=_correlation(a, n),
+        rank_correlation=_correlation(_ranks(a), _ranks(n)),
+        relative_rmse=rmse/reference_mean if reference_mean else None,
+        relative_energy_error=float((n.sum()-a.sum())/a.sum()) if a.sum() else None,
+        brightest_facets_counted=top,
+        brightest_facet_overlap=len(brightest_reference & brightest_neural)/top,
+        analytic_noise_floor_correlation=_correlation(a1, a2),
+        neural_noise_floor_correlation=_correlation(n1, n2))
+    result.update(noise_corrected(a1, a2, n1, n2))
+    return result
+
+
+# contrast (std / mean) with the render noise taken out: the covariance of two independent
+# halves of the same image estimates the variance of the converged image
+def noise_free_contrast(y1, y2):
+    mean = .5*(y1.mean() + y2.mean())
+    covariance = float(((y1 - y1.mean())*(y2 - y2.mean())).mean())
+    return math.sqrt(max(covariance, 0.))/mean if mean > 0 else None
+
+
+# 95% interval for a correlation by resampling the paired values (facets) with replacement
+def bootstrap_correlation(x, y, repeats=2000, seed=0):
+    rng = np.random.default_rng(seed)
+    values = []
+    for _ in range(repeats):
+        pick = rng.integers(len(x), size=len(x))
+        r = _correlation(x[pick], y[pick])
+        if r is not None:
+            values.append(r)
+    return [float(np.percentile(values, 2.5)), float(np.percentile(values, 97.5))] if values else None
+
+
+# 95% interval for a pixel correlation, resampling square blocks of pixels, since neighbours are not independent
+def block_bootstrap_correlation(x_image, y_image, mask, block=16, repeats=1000, seed=0):
+    rows, columns = np.nonzero(mask)
+    labels = (rows//block)*(mask.shape[1]//block + 1) + columns//block
+    x, y = x_image[mask], y_image[mask]
+    _, blocks = np.unique(labels, return_inverse=True)
+    sums = np.stack([np.bincount(blocks, weights=w) for w in (np.ones_like(x), x, y, x*x, y*y, x*y)], 1)
+    rng = np.random.default_rng(seed)
+    values = []
+    for _ in range(repeats):
+        n, sx, sy, sxx, syy, sxy = sums[rng.integers(len(sums), size=len(sums))].sum(0)
+        vx, vy = sxx/n - (sx/n)**2, syy/n - (sy/n)**2
+        if vx > 0 and vy > 0:
+            values.append((sxy/n - sx*sy/n**2)/math.sqrt(vx*vy))
+    return [float(np.percentile(values, 2.5)), float(np.percentile(values, 97.5))] if values else None
+
+
+# the six numbers the paper reports, from two independent halves of each mode
+def headline(a1, a2, n1, n2, mask, triangle, facet_of_triangle, min_pixels=20):
+    la1, la2, ln1, ln2 = [(image @ LUMINANCE) for image in (a1, a2, n1, n2)]
+    ya1, ya2, yn1, yn2 = [image[mask] for image in (la1, la2, ln1, ln2)]
+    corrected = noise_corrected(ya1, ya2, yn1, yn2)
+
+    label = facet_of_triangle[triangle[triangle >= 0]]
+    counts = np.bincount(label, minlength=facet_of_triangle.max()+1)
+    facets = np.flatnonzero(counts >= min_pixels)
+    fa1, fa2, fn1, fn2 = (facet_means(image, triangle, facet_of_triangle, facets) for image in (a1, a2, n1, n2))
+    fa, fn = .5*(fa1 + fa2), .5*(fn1 + fn2)
+
+    reference, other = .5*(ya1 + ya2), .5*(yn1 + yn2)
+    floor = .01*max(float(reference.mean()), 1e-12)
+    log = lambda y: np.log(np.maximum(y, 0.) + floor)
+    return dict(
+        pixel_correlation=_correlation(ya1, yn1),
+        pixel_rank_correlation=_correlation(_ranks(ya1), _ranks(yn1)),
+        pixel_log_correlation=_correlation(log(ya1), log(yn1)),
+        pixel_correlation_ci95=block_bootstrap_correlation(la1, ln1, mask),
+        pixel_noise_floor=_correlation(ya1, ya2),
+        disattenuated_correlation=corrected['disattenuated_correlation'],
+        reliability_analytic=corrected['reliability_analytic'],
+        reliability_neural=corrected['reliability_neural'],
+        facet_correlation=_correlation(fa, fn),
+        facet_correlation_ci95=bootstrap_correlation(fa, fn),
+        facet_noise_floor=_correlation(fa1, fa2),
+        facets_used=int(len(facets)),
+        relative_energy_error=float((other.sum() - reference.sum())/reference.sum()) if reference.sum() else None,
+        noise_free_contrast_analytic=noise_free_contrast(ya1, ya2),
+        noise_free_contrast_neural=noise_free_contrast(yn1, yn2),
+        pixels=int(mask.sum()))
+
+
+HEADLINE_DEFINITIONS = {
+    'pixel_correlation': 'Pearson correlation of linear luminance over stone pixels, analytic seeds of the first '
+                         'half against neural seeds of the first half (equal sample counts)',
+    'pixel_correlation_ci95': '95% interval, bootstrap over 16 x 16 pixel blocks',
+    'pixel_noise_floor': 'the same correlation between the two analytic halves: the best any method can reach',
+    'pixel_rank_correlation': 'Spearman (rank) correlation of the same pixels; every pixel counts equally, so a few '
+                              'very bright sparkles cannot decide it',
+    'pixel_log_correlation': 'Pearson correlation of log luminance (plus 1% of the mean reference luminance), which '
+                             'weighs dark and bright regions more evenly',
+    'disattenuated_correlation': 'cross-half correlation divided by the root of both modes\' split-half '
+                                 'reliabilities; estimates the correlation at infinite samples',
+    'facet_correlation': 'Pearson correlation of mean luminance per geometric facet (coplanar triangles merged), '
+                         'facets covering at least 20 pixels',
+    'facet_correlation_ci95': '95% interval, bootstrap over facets',
+    'relative_energy_error': '(neural - analytic) / analytic, summed luminance over stone pixels',
+    'noise_free_contrast': 'sqrt(covariance of the two halves) / mean: standard deviation over mean with the '
+                           'render noise removed',
+    'interior_only': 'the same metrics on light that went through the stone interior; the exact first-surface '
+                     'reflection, identical in both modes, is excluded',
+}
 
 
 def highlight_agreement(reference, other, fraction=.01):
@@ -169,8 +350,9 @@ def main():
     neural, neural_reports, neural_parts = load_renders(args.neural)
     if analytic.shape != neural.shape:
         raise ValueError('Modes differ in resolution or seed count')
-    for key in ('azimuth', 'width', 'height', 'spp', 'rotation_deg'):
-        if analytic_reports[0].get(key) != neural_reports[0].get(key):
+    for key in ('azimuth', 'width', 'height', 'spp', 'rotation_deg', 'camera'):
+        default = 'studio' if key == 'camera' else None
+        if analytic_reports[0].get(key, default) != neural_reports[0].get(key, default):
             raise ValueError('Modes disagree on %s; comparison would be unpaired' % key)
     if analytic_reports[0]['mode'] != 'analytic' or neural_reports[0]['mode'] != 'neural':
         raise ValueError('Render modes are mislabelled')
@@ -181,7 +363,8 @@ def main():
     rotation_deg = analytic_reports[0].get('rotation_deg')
     print('computing stone mask at azimuth %g%s' % (
         azimuth, '' if rotation_deg is None else ', rotation %s' % (rotation_deg,)), flush=True)
-    mask = stone_mask(checkpoint, width, height, azimuth, rotation_deg)
+    mask, triangle = stone_hits(checkpoint, width, height, azimuth, rotation_deg,
+                                analytic_reports[0].get('camera', 'studio'))
     if not mask.any():
         raise ValueError('Empty stone mask')
 
@@ -206,6 +389,11 @@ def main():
         half_split_comparison=compare(a1, n1, mask, anchor),
         analytic_noise_floor=compare(a1, a2, mask, anchor),
         neural_noise_floor=compare(n1, n2, mask, anchor),
+        noise_corrected=noise_corrected(*[(image[mask] @ LUMINANCE) for image in (a1, a2, n1, n2)]),
+        facet_comparison=facet_comparison(
+            dict(analytic=mean_analytic, neural=mean_neural, a1=a1, a2=a2, n1=n1, n2=n2),
+            triangle, geometric_facets(checkpoint['vertices'].numpy().astype(np.float64),
+                                       checkpoint['faces'].numpy())),
         limitations=[
             'Analytic mode is the reference transport path, not converged physical ground truth.',
             'Single view and single lighting rig; no held-out illumination.',
@@ -229,6 +417,17 @@ def main():
                 max(float((mean_neural[mask] @ LUMINANCE).sum()), 1e-30))
             report['components'][name] = entry
 
+    facet_of_triangle = geometric_facets(checkpoint['vertices'].numpy(), checkpoint['faces'].numpy())
+    interior = None
+    if 'operator' in analytic_parts and 'operator' in neural_parts:
+        parts_a, parts_n = analytic_parts['operator'], neural_parts['operator']
+        interior = headline(parts_a[:half].mean(0), parts_a[half:].mean(0),
+                            parts_n[:half].mean(0), parts_n[half:].mean(0), mask, triangle, facet_of_triangle)
+    report['headline'] = dict(
+        whole_stone=headline(a1, a2, n1, n2, mask, triangle, facet_of_triangle),
+        interior_only=interior,
+        definitions=HEADLINE_DEFINITIONS)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding='utf-8')
 
@@ -250,6 +449,18 @@ def main():
         else:
             ratio = '%.4g' % (abs(signal)/abs(noise)) if noise else 'inf'
         print('%-28s %14.5g %14.5g %14s' % (key, signal, noise, ratio))
+    corrected, facet = report['noise_corrected'], report['facet_comparison']
+    print('\n%-28s %14s' % ('noise corrected (pixels)', 'neural'))
+    for key in ('cross_half_correlation', 'disattenuated_correlation', 'debiased_relative_rmse'):
+        value = corrected[key]
+        print('%-28s %14s' % (key, 'n/a' if value is None else '%.5g' % value))
+    print('\n%-28s %14s   (%d of %d facets visible, %d triangles)'
+          % ('facets', 'neural', facet['visible_facets'], facet['geometric_facets'], facet['triangles']))
+    for key in ('correlation', 'rank_correlation', 'disattenuated_correlation',
+                'brightest_facet_overlap', 'relative_rmse', 'debiased_relative_rmse',
+                'analytic_noise_floor_correlation'):
+        value = facet[key]
+        print('%-28s %14s' % (key, 'n/a' if value is None else '%.5g' % value))
     if report.get('components'):
         # The learned operator in isolation, with the shared analytic
         # first-surface reflection removed from both sides.
@@ -262,6 +473,15 @@ def main():
                      'n/a' if correlation is None else '%.5g' % correlation,
                      entry['neural_share_of_stone_radiance'],
                      entry['relative_energy_error']))
+    print('\n%-30s %16s %16s' % ('headline', 'whole stone', 'interior only'))
+    for key in ('pixel_correlation', 'pixel_noise_floor', 'disattenuated_correlation', 'facet_correlation',
+                'facet_noise_floor', 'relative_energy_error', 'noise_free_contrast_analytic',
+                'noise_free_contrast_neural'):
+        cells = []
+        for block in (report['headline']['whole_stone'], report['headline']['interior_only']):
+            value = None if block is None else block[key]
+            cells.append('n/a' if value is None else '%.4f' % value)
+        print('%-30s %16s %16s' % (key, *cells))
     print('\nWrote %s' % args.output)
 
 

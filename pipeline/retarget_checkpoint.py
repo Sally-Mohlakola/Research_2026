@@ -1,84 +1,46 @@
-"""Re-point a trained boundary operator at a different stone, without retraining.
-
-This is the cross-cut generalisation probe. A boundary model is bound to the
-mesh it was trained on in three places: the geometry buffers it decodes exit
-coordinates against, the facet categorical whose width is the face count, and
-the facet embedding that conditions the coordinate head. Swapping the mesh
-means rewriting all three while keeping every learned weight.
-
-Two things transfer and one does not, which is exactly what makes the test
-informative. The encoder, the escape head and the coordinate head are all
-expressed in a facet's own local frame -- barycentric logits and tangent slopes
--- so they are geometry-agnostic and carry over unchanged. The facet
-categorical is not: class k means "the k-th triangle of the training mesh", and
-that label has no meaning on another stone.
-
-So the facet head needs a correspondence. Identity is the honest null: keep
-index k as index k and accept that the labels are arbitrary. The default is
-better -- a greedy assignment pairing each new facet with the unused old facet
-whose outward normal points most nearly the same way, so the operator's learned
-preference for a direction survives the swap. A permutation rather than nearest
-matching keeps the softmax a distribution over distinct facets.
-
-The resulting checkpoint renders through the ordinary pipeline, and the analytic
-mode of the same run traces the new stone for real, so the pair is a matched
-comparison on the target geometry.
-"""
 import sys
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))  # the repo root, for config/, neural/ and the stage folders
+sys.path.insert(0, str(REPO))
+
 import argparse
 import hashlib
 import json
-from pathlib import Path
 
 import numpy as np
 import torch
 
 from config.parameters import get_diamond_parameters
 from ground_truth.cuts import make_diamond
-from neural.boundary_model import frames
+from neural.learned_interior_model import frames
 
 GEOMETRY_BUFFERS = ('triangles', 'tangent', 'bitangent', 'normal')
 
 
+# pair each new facet with the unused old facet whose outward normal points most nearly the same way
 def greedy_assignment(new_normals, old_normals):
-    """Permutation pairing new facets to old ones by outward normal agreement.
-
-    Hungarian assignment would be optimal, but scipy is not a dependency here
-    and greedy on a sorted similarity matrix is within a degree or two of it on
-    64 facets. The mean alignment achieved is reported so the quality of the
-    correspondence is visible rather than assumed.
-    """
     similarity = new_normals @ old_normals.T
     order = np.dstack(np.unravel_index(np.argsort(similarity, axis=None)[::-1],
                                        similarity.shape))[0]
+
     permutation = np.full(len(new_normals), -1, dtype=np.int64)
     taken = np.zeros(len(old_normals), dtype=bool)
     for new, old in order:
         if permutation[new] < 0 and not taken[old]:
             permutation[new], taken[old] = old, True
+
     if (permutation < 0).any():
         raise ValueError('Assignment left a facet unmatched')
     return permutation
 
 
+# pairing for meshes with different face counts: match one to one, then surplus facets reuse their nearest old facet
 def resized_assignment(new_normals, old_normals):
-    """Correspondence between meshes with different face counts.
-
-    As many facets as both meshes share are paired one-to-one by the greedy
-    assignment; each surplus target facet then reuses the old facet it is best
-    aligned with. When the target has fewer facets, the unmatched old classes
-    simply drop out of the softmax. This is a probe of transfer, not a claim
-    that the facets correspond: the facet head was trained on the source mesh.
-    """
     similarity = new_normals @ old_normals.T
     shared = min(len(new_normals), len(old_normals))
     if len(new_normals) <= len(old_normals):
-        # Pick the old facets best aligned with some new one, then pair within them.
         return greedy_assignment(new_normals, old_normals)
-    # Pair the best-aligned new facets first; the rest reuse their nearest old facet.
+
     first = np.argsort(-similarity.max(1))[:shared]
     permutation = np.full(len(new_normals), -1, dtype=np.int64)
     permutation[first] = greedy_assignment(new_normals[first], old_normals)
@@ -87,9 +49,35 @@ def resized_assignment(new_normals, old_normals):
     return permutation
 
 
+# which old facet each new facet takes its facet-head weights from
+def facet_correspondence(normal, old_normal, resized, correspondence, parser):
+    if resized:
+        if correspondence == 'identity':
+            parser.error('--allow_resize needs --correspondence normal')
+        return resized_assignment(normal, old_normal)
+    if correspondence == 'identity':
+        return np.arange(len(normal))
+    return greedy_assignment(normal, old_normal)
+
+
+# swap in the new stone's geometry and permute the facet head, a reused facet splits its probability so it isn't counted twice
+def retarget_weights(checkpoint, geometry, permutation, old_face_count):
+    state = dict(checkpoint['state_dict'])
+    for name, value in zip(GEOMETRY_BUFFERS, geometry):
+        state[name] = torch.as_tensor(value, dtype=torch.float32)
+
+    index = torch.as_tensor(permutation, dtype=torch.long)
+    state['facet.weight'] = state['facet.weight'][index].clone()
+    state['facet.bias'] = state['facet.bias'][index].clone()
+    multiplicity = np.bincount(permutation, minlength=old_face_count)[permutation]
+    state['facet.bias'] -= torch.as_tensor(np.log(multiplicity), dtype=torch.float32)
+    state['embedding.weight'] = state['embedding.weight'][index].clone()
+    return state
+
+
+# point a trained operator at a different stone without retraining, the cross-cut transfer test
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description='Re-point a trained learned interior operator at a different stone.')
     parser.add_argument('--model', type=Path, required=True, help='Trained source checkpoint')
     parser.add_argument('--diamond_name', required=True,
                         help='Target variant from config.parameters')
@@ -106,6 +94,7 @@ def main():
     checkpoint = torch.load(args.model, map_location='cpu', weights_only=True)
     if checkpoint.get('schema_version') != 1:
         raise ValueError('Unsupported model schema')
+
     parameters = get_diamond_parameters(args.diamond_name)
     vertices, faces = make_diamond(parameters)
     old_faces = checkpoint['faces'].numpy()
@@ -119,28 +108,12 @@ def main():
     triangles, tangent, bitangent, normal = frames(vertices, faces)
     old_normal = checkpoint['state_dict']['normal'].numpy()
     resized = len(faces) != len(old_faces)
-    if resized:
-        if args.correspondence == 'identity':
-            parser.error('--allow_resize needs --correspondence normal')
-        permutation = resized_assignment(normal, old_normal)
-    elif args.correspondence == 'identity':
-        permutation = np.arange(len(faces))
-    else:
-        permutation = greedy_assignment(normal, old_normal)
+    permutation = facet_correspondence(normal, old_normal, resized, args.correspondence, parser)
     alignment = np.degrees(np.arccos(np.clip(
         (normal*old_normal[permutation]).sum(1), -1., 1.)))
 
-    state = dict(checkpoint['state_dict'])
-    for name, value in zip(GEOMETRY_BUFFERS, (triangles, tangent, bitangent, normal)):
-        state[name] = torch.as_tensor(value, dtype=torch.float32)
-    index = torch.as_tensor(permutation, dtype=torch.long)
-    state['facet.weight'] = state['facet.weight'][index].clone()
-    state['facet.bias'] = state['facet.bias'][index].clone()
-    # A source facet reused by k target facets splits its probability k ways,
-    # so the surplus facets do not inflate the direction they inherit.
-    multiplicity = np.bincount(permutation, minlength=len(old_faces))[permutation]
-    state['facet.bias'] -= torch.as_tensor(np.log(multiplicity), dtype=torch.float32)
-    state['embedding.weight'] = state['embedding.weight'][index].clone()
+    state = retarget_weights(checkpoint, (triangles, tangent, bitangent, normal),
+                             permutation, len(old_faces))
 
     radius = float(np.linalg.norm(vertices, axis=1).max())
     new_vertices = torch.as_tensor(vertices, dtype=torch.float32)
@@ -148,8 +121,6 @@ def main():
     metadata = dict(checkpoint['metadata'])
     metadata['diamond_name'] = args.diamond_name
     metadata['parameters'] = parameters
-    # render_boundary re-derives this hash and refuses to run on a mismatch, so
-    # it has to be recomputed here over exactly the bytes that check sees.
     metadata['geometry_sha256'] = hashlib.sha256(
         new_vertices.numpy().tobytes()
         + new_faces.numpy().astype(np.uint32).tobytes()).hexdigest()
@@ -177,6 +148,7 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(retargeted, args.output)
+
     print('source %s (%s, %d faces)' % (args.model, checkpoint['metadata']['diamond_name'],
                                         len(old_faces)))
     print('target %s (%d vertices, %d faces)' % (args.diamond_name, len(vertices), len(faces)))

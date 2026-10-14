@@ -2,8 +2,7 @@ from config import device, variant
 
 import mitsuba as mi
 import drjit as dr
-# Respect a variant the caller has already chosen (e.g. a scalar_spectral
-# test harness) instead of forcing the configured one.
+
 if mi.variant() is None:
     mi.set_variant(variant)
 
@@ -15,7 +14,7 @@ class DiamondShading(mi.BSDF):
         self.eta = self.int_ior/self.ext_ior
 
         reflection = mi.BSDFFlags.DeltaReflection | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide
-        transmission = mi.BSDFFlags.DeltaTransmission | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide #refraction (Snell)
+        transmission = mi.BSDFFlags.DeltaTransmission | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide # refraction (Snell's law)
         self.m_components =[reflection, transmission]
         self.m_flags = reflection | transmission
     
@@ -57,7 +56,7 @@ class DiamondShading(mi.BSDF):
             return self.m_flags
         return self.m_components[index]
     
-    #missing 
+    # missing 
     """
     def eval_attribute(self, name, si, active):
         return mi.UnpolarizedSpectrum(0.0)

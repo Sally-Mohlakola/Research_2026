@@ -1,4 +1,4 @@
-# From Radiance Distribution Maps to a Learned Boundary Operator
+# From Radiance Distribution Maps to a Learned Interior Operator
 
 *How the method in this project evolved, why each step was taken, and what it
 drew on.*
@@ -12,7 +12,7 @@ through:
    paper;
 2. **a LEAN-inspired "sparkle" extension** that tried to recover detail the RDM
    averaged away;
-3. **a learned boundary operator**, which replaced the RDM once measurements
+3. **a learned interior operator**, which replaced the RDM once measurements
    showed what it was missing.
 
 Every transition is backed by something in the repository: a measurement, a
@@ -238,7 +238,7 @@ normal as well, 40.4 %.
 
 ---
 
-## 5. Stage 3 — The learned boundary operator
+## 5. Stage 3 — The learned interior operator
 
 ### 5.1 The idea
 
@@ -249,7 +249,7 @@ full question an RDM leaves out:
 > wavelength**. Does it come out — and if so, **through which facet**, **where
 > on that facet**, and **in what direction**?*
 
-It is called a **boundary operator** because it maps a state on the stone's
+It is called a **learned interior operator** because it learns the stone's interior: it maps a state on the stone's
 boundary (the entry) directly to another state on the boundary (the exit),
 skipping everything in between. It is the RDM generalised along the axis the
 RDM threw away: position. One network query replaces the entire internal
@@ -281,7 +281,7 @@ journey.
 
 ### 5.3 Where the training data come from
 
-`gather_boundary.py` generates training data by doing the expensive thing
+`gather_learned_interior.py` generates training data by doing the expensive thing
 honestly: it fires rays at the stone, traces the true internal journey with
 exact Fresnel physics at every bounce, and records entry and exit. Each record
 is labelled *escaped*, *truncated* (still bouncing after 128 interactions) or
@@ -298,7 +298,7 @@ Matching the camera's distribution improved held-out accuracy and corrected a
 
 ### 5.4 How it is used when rendering
 
-`render_boundary.py` handles everything outside the stone with ordinary path
+`render_learned_interior.py` handles everything outside the stone with ordinary path
 tracing. When a camera ray hits the diamond and refracts in, the renderer asks
 the network where the light comes out, then continues tracing from that exit
 point. Queries are grouped in batches of 512, and a predicted exit that would
@@ -306,12 +306,12 @@ immediately re-enter the stone is discarded rather than patched.
 
 ### 5.5 A clean break in the code
 
-The boundary operator shares **no code** with the RDM system. Checked against
+The learned interior operator shares **no code** with the RDM system. Checked against
 the actual imports, none of the operator's files — the model, data handling,
 gathering, training and rendering scripts — imports anything from
 `utils/rdm.py`, `gather_rdm.py`, `neural/base_model.py`, `bsdf/rdm_sampler.py`
-or `bsdf/neural_bsdf.py`. The only connection is optional: `render_boundary.py`
-can load `neural/boundary_prior.py`, a *new* directional table built from the
+or `bsdf/neural_bsdf.py`. The only connection is optional: `render_learned_interior.py`
+can load `neural/learned_interior_prior.py`, a *new* directional table built from the
 operator's own data and used purely to guide random sampling. None of the
 reported results use it.
 
@@ -360,7 +360,7 @@ confirmed the pivot on the network itself: direction only, 11.7 %; all inputs,
 
 ## 7. What carried forward, and what was dropped
 
-| idea | RDM stage | sparkle stage | boundary operator |
+| idea | RDM stage | sparkle stage | learned interior operator |
 | --- | --- | --- | --- |
 | measure true transport by tracing rays, then learn from it | yes | yes | yes |
 | exact analytic physics at the entry surface | added via "Route A" | kept | kept |
@@ -368,7 +368,7 @@ confirmed the pivot on the network itself: direction only, 11.7 %; all inputs,
 | condition on **position** | no | faked with a hash | **yes, as a real input** |
 | condition on wavelength | no | no | yes (measured to contribute little) |
 | directions chopped into bins | yes | yes | **no** |
-| treat the stone as one "boundary operator" | recognised, not built | — | **built** |
+| treat the stone as one "learned interior operator" | recognised, not built | — | **built** |
 | recover lost spread / sparkle | no — mean only | yes, from second moments | through a sharp, position-aware model |
 | training data matched to the camera | no | no | yes |
 
@@ -386,7 +386,7 @@ A suggested summary, in words that stay close to the evidence:
 > discards position, which for a faceted stone determines which facet light
 > leaves through: direction alone predicts the exit facet barely better than
 > chance. Both problems point to the same missing variable. The method was
-> therefore generalised into a learned boundary operator that conditions on
+> therefore generalised into a learned interior operator that conditions on
 > entry position, direction, normal and wavelength and predicts the full exit
 > state, replacing the stone's internal transport with a single network query.
 > The RDM was retained as a measured baseline.*
@@ -453,8 +453,8 @@ against the original publications before submission.*
    `config/parameters.py` are Tolkowsky's ideal-cut angles.
 8. **E. Hecht.** *Optics* (any recent edition). **(identified)** — Standard
    reference for the Fresnel equations, Snell's law and total internal
-   reflection used throughout (`gather_boundary.dielectric`,
-   `render_boundary.analytic_exit`, `bsdf/dispersive_dielectric.py`).
+   reflection used throughout (`gather_learned_interior.dielectric`,
+   `render_learned_interior.analytic_exit`, `bsdf/dispersive_dielectric.py`).
 9. **Gemmological trade diagrams** of the step (emerald) cut and pear cut
    supplied during the project **(project source)** — The reference geometry for
    `ground_truth/step_geometry.py` and `ground_truth/pear_geometry.py`.
@@ -477,7 +477,7 @@ against the original publications before submission.*
 13. **A. Wilkie, S. Nawaz, M. Droske, A. Weidlich and J. Hanika.** *Hero
     Wavelength Spectral Sampling.* Computer Graphics Forum 33(4), 2014.
     **(identified)** — One wavelength traced per camera sample, the spectral
-    strategy used in `render_boundary.py`.
+    strategy used in `render_learned_interior.py`.
 14. **ITU-R Recommendation BT.709.** **(identified)** — The luminance weights
     0.2126, 0.7152, 0.0722 used in every image comparison (`evaluate_render.py`,
     `compare_figure.py`).
@@ -492,11 +492,11 @@ against the original publications before submission.*
 16. **E. Veach and L. J. Guibas.** *Optimally Combining Sampling Techniques for
     Monte Carlo Rendering.* Proceedings of SIGGRAPH, 1995. **(identified)** —
     Combining sampling strategies with weights; the basis of the mixture weight
-    in `neural/boundary_prior.py`.
+    in `neural/learned_interior_prior.py`.
 17. **T. Hesterberg.** *Weighted Average Importance Sampling and Defensive
     Mixture Distributions.* Technometrics 37(2), 1995. **(identified)** —
     Mixing a broad "defensive" distribution into a proposal so weights stay
-    bounded; the reason `neural/boundary_prior.py` keeps a uniform floor and
+    bounded; the reason `neural/learned_interior_prior.py` keeps a uniform floor and
     requires the mixing fraction below 1.
 18. **D. J. Wheeler and R. M. Needham.** *TEA, a Tiny Encryption Algorithm.* Fast
     Software Encryption, 1994; and **F. Zafar, M. Olano and A. Curtis.** *GPU
@@ -520,7 +520,7 @@ against the original publications before submission.*
     Features Let Networks Learn High Frequency Functions in Low Dimensional
     Domains.* NeurIPS, 2020. **(cited in code)** — Cited in
     `neural/base_model.py` for `Model_M`'s input encoding; the leading
-    candidate for improving the boundary operator.
+    candidate for improving the learned interior operator.
 22. **N. Rahaman, A. Baratin, D. Arpit, F. Draxler, M. Lin, F. Hamprecht,
     Y. Bengio and A. Courville.** *On the Spectral Bias of Neural Networks.* ICML,
     2019. **(identified)** — Why small networks on raw coordinates favour smooth
@@ -531,7 +531,7 @@ against the original publications before submission.*
 24. **D. Hendrycks and K. Gimpel.** *Gaussian Error Linear Units (GELUs)*,
     2016; **S. Elfwing, E. Uchibe and K. Doya.** *Sigmoid-Weighted Linear Units
     for Neural Network Function Approximation in Reinforcement Learning.* Neural
-    Networks, 2018. **(identified)** — The SiLU activation in the boundary
+    Networks, 2018. **(identified)** — The SiLU activation in the learned interior
     operator.
 25. **K. He, X. Zhang, S. Ren and J. Sun.** *Delving Deep into Rectifiers:
     Surpassing Human-Level Performance on ImageNet Classification.* ICCV, 2015.
@@ -549,7 +549,7 @@ against the original publications before submission.*
 28. **D. Vicini, V. Koltun and W. Jakob.** *A Learned Shape-Adaptive Subsurface
     Scattering Model.* ACM Transactions on Graphics 38(4), 2019. **(related
     work)** — Learning where light exits a region given where it enters, for
-    diffusive materials; the closest prior art to the boundary operator.
+    diffusive materials; the closest prior art to the learned interior operator.
 29. **S. Kallweit, T. Müller, B. McWilliams, M. Gross and J. Novák.** *Deep
     Scattering: Rendering Atmospheric Clouds with Radiance-Predicting Neural
     Networks.* ACM Transactions on Graphics 36(6), 2017. **(related work)** —
@@ -559,7 +559,7 @@ against the original publications before submission.*
 
 30. **T. Cover and P. Hart.** *Nearest Neighbor Pattern Classification.* IEEE
     Transactions on Information Theory 13(1), 1967. **(identified)** — The
-    nearest-neighbour oracle in `oracle_boundary.py`.
+    nearest-neighbour oracle in `oracle_learned_interior.py`.
 31. **H. Shimodaira.** *Improving Predictive Inference under Covariate Shift by
     Weighting the Log-Likelihood Function.* Journal of Statistical Planning and
     Inference 90(2), 2000. **(identified)** — The training/testing distribution

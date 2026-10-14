@@ -40,7 +40,7 @@ Source: Soh and Montazeri, *Neural Appearance Model for Cloth Rendering*, CGF
 | conditioning | 4D RDM in angle coordinates only | transport is nonlocal: entry on the crown, exit on the pavilion |
 | compression ratio | hundreds of scattering events per query | mean path depth 9.1 |
 
-The second was diagnosed and fixed by this project: the boundary model conditions
+The second was diagnosed and fixed by this project: the learned interior model conditions
 on object-space position, facet, direction and wavelength, and predicts an exit
 *position* as well as a direction. The first and third were inherited untested.
 
@@ -783,7 +783,7 @@ only the first is explained here.
 | cost and noise | `renders/flash_hires_*/s*/render.json` |
 | deterministic decode | `renders/det_exit/evaluation.json` |
 | oracle facet | `renders/oracle_facet/evaluation.json` |
-| within-facet decode error | `oracle_boundary.py` conditioning path, `checkpoints/camera_pool/test.npz` |
+| within-facet decode error | `oracle_learned_interior.py` conditioning path, `checkpoints/camera_pool/test.npz` |
 | nearest-neighbour oracle | `checkpoints/camera_model/oracle.json` |
 | RDM as branch prior | tables built from `checkpoints/camera_pool/train.npz`, evaluated on `test.npz` |
 | RDM variance ratio | four matched seeds per arm, `checkpoints/step_transfer`, 160x160 at 16 spp |

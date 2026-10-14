@@ -1,4 +1,4 @@
-"""Write a nested entry-grouped subset of a gathered boundary dataset.
+"""Write a nested entry-grouped subset of a gathered learned interior dataset.
 
 Subsets select whole entry states, never individual paths, so every rung of a
 data ladder keeps the repeated outcomes of an entry together and remains

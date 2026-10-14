@@ -1,6 +1,6 @@
 """Learned dispersion: how one path's other colours leave, given the hero's exit.
 
-The boundary operator ignores wavelength because the colour-dependent part of
+The learned interior operator ignores wavelength because the colour-dependent part of
 an exit is far below its own error. The paired-wavelength pilot
 (gather_dispersion.py) showed why, and what a model of it needs: dispersion has
 two regimes. On short internal paths the colours share the hero's route and fan
@@ -17,7 +17,7 @@ given the hero's entry state, exit facet and exit coordinates:
   slopes), so the shifted exit is always on the facet and always outward.
 
 A colour the gate sends away is given its own independent draw from the
-boundary operator at its own wavelength. Both branches are sampled, never
+learned interior operator at its own wavelength. Both branches are sampled, never
 weighted, so the head is a generative model of the other lanes and adds no
 importance weights to the renderer.
 
@@ -31,7 +31,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from neural.boundary_model import frames
+from neural.learned_interior_model import frames
 
 WAVELENGTH_CENTRE, WAVELENGTH_SCALE = 595., 235.
 
@@ -155,7 +155,7 @@ def load_dispersion(path, operator_checkpoint=None):
         raise ValueError('Not a dispersion checkpoint: %s' % path)
     if operator_checkpoint is not None and not torch.equal(
             checkpoint['faces'], operator_checkpoint['faces'].to(checkpoint['faces'].dtype)):
-        raise ValueError('Dispersion head and boundary operator use different geometry')
+        raise ValueError('Dispersion head and learned interior operator use different geometry')
     model = DispersionModel(checkpoint['vertices'].numpy(), checkpoint['faces'].numpy(),
                             checkpoint['width'], checkpoint['depth'])
     model.load_state_dict(checkpoint['state_dict'])

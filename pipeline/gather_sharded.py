@@ -1,38 +1,21 @@
-"""Gather boundary transport at scales that do not fit in memory.
-
-gather_boundary.py holds a whole pool in memory until it is saved, which is
-fine at a few million records and impossible at fifty million on a 15 GB
-machine. This drives the same `gather` function, unchanged, over many small
-shards and writes each one to disk as soon as it is finished, so peak memory is
-one shard per worker regardless of the total.
-
-Shards are independent and resumable. Shard k always covers entry IDs
-[k*entries_per_shard, (k+1)*entries_per_shard) and draws from the k-th child of
-one SeedSequence, so its contents depend on the seed and its index and not on
-how many workers ran it or in what order. A shard that already exists is
-skipped, so an interrupted gather resumes where it stopped, and `--max_seconds`
-lets a gather be run in bounded steps.
-
-Every shard carries the same metadata and geometry as a gather_boundary.py pool,
-so `load_boundary` and the rest of the pipeline read shards unchanged.
-"""
 import sys
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))  # the repo root, for config/, neural/ and the stage folders
+sys.path.insert(0, str(REPO))
+
 import argparse
 import hashlib
 import json
 import multiprocessing
 import time
-from pathlib import Path
 
 import numpy as np
 
-import pipeline.gather_boundary as gb
+import pipeline.gather_learned_interior as gb
 from config.parameters import get_diamond_parameters
 
 
+# gather one shard: shard k always covers the same entry ids and the k-th random stream
 def _run_shard(task):
     (index, diamond_name, entries, paths, max_depth, child, dispersion,
      sampling, azimuth_range) = task
@@ -41,9 +24,25 @@ def _run_shard(task):
     return index, arrays, attempts
 
 
+# the metadata every shard carries, the same as a gather_learned_interior pool plus the sharding scheme
+def shard_metadata(args, parameters, geometry, shards):
+    return dict(schema_version=1, diamond_name=args.diamond_name, parameters=parameters,
+                seed=args.seed, max_depth=args.max_depth,
+                dispersion=not args.no_dispersion, geometry_sha256=geometry,
+                coordinates='object_space',
+                direction_convention='entry points into stone; exit points out',
+                transport_mode='radiance',
+                conditioning='entry transmission forced; multiply entry_transmittance once',
+                status_codes={'escaped': 0, 'truncated': 1, 'invalid': 2},
+                entry_sampling=args.entry_sampling, azimuth_range=list(args.azimuth_range),
+                sharding=dict(shards=shards, entries_per_shard=args.entries_per_shard,
+                              paths_per_entry=args.paths_per_entry,
+                              seed_scheme='SeedSequence(seed).spawn(shards)[index]'))
+
+
+# gather a pool too big for memory as small shards written straight to disk, skipping shards already there
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description='Gather interior transport in resumable shards.')
     parser.add_argument('--output_dir', type=Path, required=True)
     parser.add_argument('--diamond_name', default='pear_brilliant')
     parser.add_argument('--records', type=int, required=True,
@@ -63,21 +62,11 @@ def main():
     per_shard = args.entries_per_shard*args.paths_per_entry
     shards = -(-args.records//per_shard)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
     parameters = get_diamond_parameters(args.diamond_name)
     _, vertices, faces = gb.build_scene(parameters)
     geometry = hashlib.sha256(vertices.tobytes()+faces.tobytes()).hexdigest()
-    metadata = dict(schema_version=1, diamond_name=args.diamond_name, parameters=parameters,
-                    seed=args.seed, max_depth=args.max_depth,
-                    dispersion=not args.no_dispersion, geometry_sha256=geometry,
-                    coordinates='object_space',
-                    direction_convention='entry points into stone; exit points out',
-                    transport_mode='radiance',
-                    conditioning='entry transmission forced; multiply entry_transmittance once',
-                    status_codes={'escaped': 0, 'truncated': 1, 'invalid': 2},
-                    entry_sampling=args.entry_sampling, azimuth_range=list(args.azimuth_range),
-                    sharding=dict(shards=shards, entries_per_shard=args.entries_per_shard,
-                                  paths_per_entry=args.paths_per_entry,
-                                  seed_scheme='SeedSequence(seed).spawn(shards)[index]'))
+    metadata = shard_metadata(args, parameters, geometry, shards)
     (args.output_dir/'manifest.json').write_text(json.dumps(metadata, indent=2))
 
     children = np.random.SeedSequence(args.seed).spawn(shards)
@@ -92,9 +81,11 @@ def main():
                    args.max_depth, children[k], not args.no_dispersion,
                    args.entry_sampling, tuple(args.azimuth_range))
                   for k in todo])
+
     with multiprocessing.Pool(args.workers) as pool:
         pending = set()
 
+        # start the next shard, unless time is up or none are left
         def submit():
             if args.max_seconds and time.perf_counter()-began > args.max_seconds:
                 return False
@@ -107,25 +98,31 @@ def main():
         for _ in range(args.workers):
             if not submit():
                 break
+
         while pending:
             finished = [p for p in pending if p.ready()]
             if not finished:
                 time.sleep(.2)
                 continue
+
             for p in finished:
                 pending.discard(p)
                 index, arrays, attempts = p.get()
+
                 target = args.output_dir/('shard_%04d.npz' % index)
                 partial = target.with_suffix('.tmp.npz')
                 shard_meta = dict(metadata, shard=index, attempts=attempts)
                 np.savez_compressed(partial, **arrays, vertices=vertices, faces=faces,
                                     metadata_json=np.array(json.dumps(shard_meta)))
                 partial.replace(target)
+
                 done += 1
                 submit()
+
             elapsed = time.perf_counter()-began
             print('  %d/%d shards this run, %.0f s, %.0f records/s'
                   % (done, len(todo), elapsed, done*per_shard/max(elapsed, 1e-9)), flush=True)
+
     remaining = sum(1 for k in range(shards)
                     if not (args.output_dir/('shard_%04d.npz' % k)).exists())
     print('finished this run: %d shards remaining' % remaining)

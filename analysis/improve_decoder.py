@@ -38,11 +38,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from neural.boundary_data import load_encoded_pool as load_pool, split_entries
-from neural.boundary_model import BoundaryCloneModel
+from neural.learned_interior_data import load_encoded_pool as load_pool, split_entries
+from neural.learned_interior_model import LearnedInteriorCloneModel
 
 
-class DecoderVariant(BoundaryCloneModel):
+class DecoderVariant(LearnedInteriorCloneModel):
     """Clone with a configurable coordinate head, everything else unchanged."""
 
     def __init__(self, vertices, faces, width=64, components=4,

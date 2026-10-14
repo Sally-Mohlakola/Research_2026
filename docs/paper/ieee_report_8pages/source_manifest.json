@@ -1,0 +1,21 @@
+{
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\docs\\paper\\main.tex": "2650efd5707a67044cf854aaa143439a62308581e0850c6b21770e1a82cffc27",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\docs\\PAPER_DRAFT.md": "1f4fd4fec3bde2bcab4e765db185c840ae7d4e67234e3adb16d99d448982778f",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\docs\\FINDINGS.md": "cebebce0c4234e986069dd578da7ed5905f7f65180ee48b810f5f2b1f5f4e29c",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\analysis\\evaluate_render.py": "d49caadb1cea2d933ac641c4ab5ea2ae6437f263be5175dc0a09792293ec2e7a",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\pipeline\\train_learned_interior.py": "86c2db65d7c5353d113306e21d179eeb62e235771780283832ded705c1d0b811",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\neural\\learned_interior_model.py": "135294ed4db6a43fcbb8bdd7c6229ca05aa28e7c42e5157620a87d19d2f04021",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\gia_mixture\\evaluation.json": "34668376ed4ef7ac6cef8ccfbacd47e30c91eb02facc2b316cc7e0384f8a7e0e",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\gia_clone\\evaluation.json": "be9b0af84475c3a4d3a95a057ac64605ab2b9d09bf67bb81078fe4454a0b4cd1",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\gia_clone_deep\\evaluation.json": "4cfabb20434c520bd71023c1968045926ce659155e2a46d65c477a4a1e0513e2",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\pear_learned\\evaluation.json": "a7af8cf6ef78145f787a3aafe995c427a547245276f0e7020aa8909342d83aaa",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\pear_clone_deep\\evaluation.json": "1d2772a66f1d13b36ca27a9d37e5207e0fbc48f612b261dec87b8a66c459308d",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\step_learned\\evaluation.json": "0b93976083a5189a7ecd409dc584ef8243ea04ace60f7e216041422788d86185",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\renders\\step_clone_deep\\evaluation.json": "1fc80c24cad2a26af2ec39eaeaf2ae811fbf4b2f8d62897ae47c609b6c59cecc",
+  "C:\\Users\\sally\\RENDERING\\checkpoint_history\\camera_model\\metrics.json": "d76d4cb3d093d3f713ac6944e3b1258211a9d2947bb6eae8dd64368a7b413deb",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\checkpoints\\gia_clone_deep\\metrics.json": "7ce50d0d4a7af0666ccdd0882b33ab38cc3495281299bae831a92e9602d844de",
+  "C:\\Users\\sally\\RENDERING\\checkpoint_history\\pear_model\\metrics.json": "5d28d7b7be58785c554734de58baeea92ef6f4fe38831de52752248e30ad85df",
+  "C:\\Users\\sally\\RENDERING\\checkpoint_history\\pear_deep\\metrics.json": "728332eb17e4f3c706bcf44688e5fb53e73844163d18380d72eb91e25dd61dce",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\checkpoints\\step_model\\metrics.json": "4749830e1f6dba8bc064ad8f2d1cdb7a8ccd0222bc55d5983a0da719ee0ac15c",
+  "C:\\Users\\sally\\RENDERING\\Research_Progress_2026\\checkpoints\\step_clone_deep\\metrics.json": "56dbe913b519de6fc70b21b2a4c4ca5c474b09d68e04f81bcee4fca235e1e6ba"
+}

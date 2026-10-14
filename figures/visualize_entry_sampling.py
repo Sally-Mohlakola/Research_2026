@@ -1,4 +1,4 @@
-"""Draw how gather_boundary.py chooses entry states, from the real sampling code.
+"""Draw how gather_learned_interior.py chooses entry states, from the real sampling code.
 
 Top row: the rays themselves. Bottom row: where they land on the stone.
 
@@ -6,7 +6,7 @@ Top row: the rays themselves. Bottom row: where they land on the stone.
                    across a disc behind the stone, so every incoming direction
                    and every part of the silhouette is equally likely
   camera, one view a pinhole camera: one fixed origin, directions spread across
-                   the square film, exactly as render_boundary samples pixels
+                   the square film, exactly as render_learned_interior samples pixels
   camera, orbit    the same camera at random azimuths over the full range,
                    which is what the training pools actually used
 
@@ -26,7 +26,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-import pipeline.gather_boundary as gb
+import pipeline.gather_learned_interior as gb
 from config.parameters import get_diamond_parameters
 
 RAY = '#2a78d6'
@@ -37,7 +37,7 @@ SURFACE = '#fcfcfb'
 
 
 def uniform_ray(rng, radius):
-    """Lines 99-107 of gather_boundary.gather, reproduced verbatim."""
+    """Lines 99-107 of gather_learned_interior.gather, reproduced verbatim."""
     u = rng.normal(size=3)
     u /= np.linalg.norm(u)
     axis = np.array([0., 0., 1.]) if abs(u[2]) < .9 else np.array([1., 0., 0.])
@@ -128,7 +128,7 @@ def main():
               '%.0f%% on the crown, %.0f%% on the pavilion' % (100*crown, 100*(1-crown)),
               limit=1.25)
 
-    figure.text(.012, .972, 'How gather_boundary.py chooses entry states', fontsize=13.5,
+    figure.text(.012, .972, 'How gather_learned_interior.py chooses entry states', fontsize=13.5,
                 color=INK, ha='left')
     figure.text(.012, .947, 'Orange = camera origin. Blue = rays that hit the stone from '
                 'outside, and where they land. Real samples from the gather code, '

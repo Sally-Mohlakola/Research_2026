@@ -98,7 +98,7 @@ def conditioning_figure(report, output, trivial, table_direction):
          {'full', 'direction_only'}, lambda v: '%.1f°' % v,
          'Within-facet decode', 'exit angle given the true facet, lower is better')
 
-    figure.suptitle('What the boundary operator needs from its inputs',
+    figure.suptitle('What the learned interior operator needs from its inputs',
                     fontsize=12.5, color=INK, x=.006, ha='left', y=1.13)
     figure.text(.006, 1.035,
                 '%d epochs per arm, %s training records, %s held-out records; '

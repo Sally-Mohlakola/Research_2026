@@ -1,6 +1,6 @@
 # Step cut rendered with the learned operator
 
-One front-view frame of the step (emerald-style) cut, rendered with a boundary
+One front-view frame of the step (emerald-style) cut, rendered with a learned interior
 operator trained on the step cut itself and compared against the analytic
 reference. Run on 27 September 2026.
 
@@ -18,7 +18,7 @@ Trace true interior transport through the step cut for camera-matched entry
 states: 65,536 entry states, 16 paths each, 1,048,576 records.
 
 ```bash
-python -B pipeline/gather_boundary.py --output checkpoints/step_pool/train.npz --diamond_name step_cut \
+python -B pipeline/gather_learned_interior.py --output checkpoints/step_pool/train.npz --diamond_name step_cut \
   --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 \
   --entry_sampling camera --azimuth_range 0 360
 ```
@@ -31,7 +31,7 @@ The mixture operator (the default head), width 64, four components, seed 23,
 80 epochs, selected on validation joint NLL over an entry-grouped split.
 
 ```bash
-python -B pipeline/train_boundary.py --data checkpoints/step_pool/train.npz \
+python -B pipeline/train_learned_interior.py --data checkpoints/step_pool/train.npz \
   --output checkpoints/step_model --epochs 80
 ```
 

@@ -14,7 +14,7 @@ Status: sampler fixes, spatial data collection, and a conditional neural escape 
 
 ## Recommended target
 
-Build a position- and wavelength-conditioned boundary transport model. Keep analytic Fresnel reflection, refraction, total internal reflection, and geometry as the reference. Treat the existing directional RDM as a coarse proposal/prior; it is not sufficient by itself to locate facet detail.
+Build a position- and wavelength-conditioned interior transport model. Keep analytic Fresnel reflection, refraction, total internal reflection, and geometry as the reference. Treat the existing directional RDM as a coarse proposal/prior; it is not sufficient by itself to locate facet detail.
 
 For an entry state, retain object-space position, facet ID or barycentrics, incident direction, wavelength, and transport mode. Gather complete escape events: exit position, exit direction, throughput, path depth, and whether the depth cap was reached. Persist geometry/IOR/dispersion conventions and sampler PDFs. Partition training data by entry state, not random neighboring histogram cells.
 
@@ -44,25 +44,25 @@ A conservative first neural method is neural importance sampling over valid anal
 On this Windows installation, selecting llvm_ad_spectral succeeds, but executing the sampler test produces LLVM Failed to materialize symbols. No render-quality or speed claim is established by these edits. Resolve the runtime or use a validated backend before launching new expensive gathers/training.
 
 
-## Implemented milestone: spatial boundary records
+## Implemented milestone: spatial learned interior records
 
-`gather_boundary.py` now traces repeated monochromatic paths from fixed entry states using scalar Mitsuba geometry. First-surface reflection remains analytic; entry transmission is forced. Internal branches are sampled with their Fresnel probabilities. Lossless escaped conditional throughput is one; multiply saved entry_transmittance once when composing with the entry reflection. This is not an RGB radiance dataset and branch_log_probability is not a continuous exit PDF.
+`gather_learned_interior.py` now traces repeated monochromatic paths from fixed entry states using scalar Mitsuba geometry. First-surface reflection remains analytic; entry transmission is forced. Internal branches are sampled with their Fresnel probabilities. Lossless escaped conditional throughput is one; multiply saved entry_transmittance once when composing with the entry reflection. This is not an RGB radiance dataset and branch_log_probability is not a continuous exit PDF.
 
-Records include positions, directions, facet IDs, wavelength, entry transmittance, throughput, depth, status and discrete path log probability. The file embeds geometry, hash and conventions. Truncation and invalid geometry events remain explicit records, with undefined exits, rather than training the network to fabricate an exit. Split by entry_id with neural/boundary_data.py. Existing directional RDM checkpoints cannot substitute for this dataset.
+Records include positions, directions, facet IDs, wavelength, entry transmittance, throughput, depth, status and discrete path log probability. The file embeds geometry, hash and conventions. Truncation and invalid geometry events remain explicit records, with undefined exits, rather than training the network to fabricate an exit. Split by entry_id with neural/learned_interior_data.py. Existing directional RDM checkpoints cannot substitute for this dataset.
 
 Small reproducible gather:
 
 ```powershell
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_smoke/transport.npz --entries 16 --paths_per_entry 4 --max_depth 64 --seed 17
-python -B -m unittest discover -s tests -p test_boundary_transport.py
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_smoke/transport.npz --entries 16 --paths_per_entry 4 --max_depth 64 --seed 17
+python -B -m unittest discover -s tests -p test_learned_interior_transport.py
 ```
 
-This CPU scalar gatherer is a correctness prototype, not a production-throughput collector. Wavelength-dependent IOR uses the same Sellmeier function as ground truth, without RGB conversion or spectral packet factors. Entry sampling is a specified hit-conditioned distribution; no absolute entry-area PDF is claimed. The next milestone is a conditional multimodal escape model and held-out transport evaluation, followed by a boundary-aware render adapter. No model is trained or installed in eval.py by this milestone.
+This CPU scalar gatherer is a correctness prototype, not a production-throughput collector. Wavelength-dependent IOR uses the same Sellmeier function as ground truth, without RGB conversion or spectral packet factors. Entry sampling is a specified hit-conditioned distribution; no absolute entry-area PDF is claimed. The next milestone is a conditional multimodal escape model and held-out transport evaluation, followed by a learned-interior render adapter. No model is trained or installed in eval.py by this milestone.
 
 
 ## Implemented milestone: conditional neural escape prototype
 
-`neural/boundary_model.py` provides BoundaryModel and load_model. The model conditions on normalized object-space entry position, incoming travel direction, normal, and wavelength. It predicts:
+`neural/learned_interior_model.py` provides LearnedInteriorModel and load_model. The model conditions on normalized object-space entry position, incoming travel direction, normal, and wavelength. It predicts:
 
 1. Probability of escape within the dataset depth cap.
 2. A categorical exit triangle.
@@ -72,28 +72,28 @@ This avoids averaging distinct exits into one point/direction. Decoding barycent
 
 Mixture densities and likelihood metrics are in transformed coordinates, NOT surface-area/solid-angle measure. A future PDF-query adapter must include transformation Jacobians and the discrete facet probability. Do not plug this density into MIS as a physical BSDF PDF. Boundary-edge and grazing targets are clipped at 1e-5 in the coordinate transform and the count is reported. Smooth mixtures approximate singular specular paths; surface-valid samples need not correspond to physically realizable paths.
 
-`train_boundary.py` uses entry-grouped validation, excludes invalid records, trains the escape head on truncated records, selects the best validation checkpoint, and saves geometry, hashes, data conventions, split IDs, and metrics. `evaluate_boundary.py` reloads that checkpoint and requires a separate gather seed and matching geometry/transport settings. The RDM prior is not yet incorporated into this spatial model; existing RDM sampler improvements remain separate.
+`train_learned_interior.py` uses entry-grouped validation, excludes invalid records, trains the escape head on truncated records, selects the best validation checkpoint, and saves geometry, hashes, data conventions, split IDs, and metrics. `evaluate_learned_interior.py` reloads that checkpoint and requires a separate gather seed and matching geometry/transport settings. The RDM prior is not yet incorporated into this spatial model; existing RDM sampler improvements remain separate.
 
 Pilot commands (output paths must not already exist):
 
 ```powershell
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_model_pilot_v2.npz --entries 256 --paths_per_entry 8 --max_depth 128 --seed 31
-python -B pipeline/train_boundary.py --data checkpoints/boundary_model_pilot_v2.npz --output checkpoints/boundary_model_pilot --epochs 100
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_model_test.npz --entries 128 --paths_per_entry 8 --max_depth 128 --seed 47
-python -B analysis/evaluate_boundary.py --model checkpoints/boundary_model_pilot/model.pt --data checkpoints/boundary_model_test.npz --output checkpoints/boundary_model_pilot/test_metrics.json
-python -B -m unittest discover -s tests -p 'test_boundary*.py'
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_model_pilot_v2.npz --entries 256 --paths_per_entry 8 --max_depth 128 --seed 31
+python -B pipeline/train_learned_interior.py --data checkpoints/boundary_model_pilot_v2.npz --output checkpoints/boundary_model_pilot --epochs 100
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_model_test.npz --entries 128 --paths_per_entry 8 --max_depth 128 --seed 47
+python -B analysis/evaluate_learned_interior.py --model checkpoints/boundary_model_pilot/model.pt --data checkpoints/boundary_model_test.npz --output checkpoints/boundary_model_pilot/test_metrics.json
+python -B -m unittest discover -s tests -p 'test_learned_interior*.py'
 ```
 
 Observed pilot results: 2,048 gathered training/validation records, including 8 invalid records excluded from learning. Best validation epoch 15; joint transformed NLL improved from 12.603 to 10.315. Later epochs overfit. Independent test: 1,024 records, zero invalid, joint NLL 11.415; predicted escape 95.54% versus measured 99.90%; top-1 exit-triangle accuracy 9.38%. Triangle accuracy compares the most likely triangle with each stochastic reference outcome, so it is not a complete distribution-quality measure. These numbers establish pipeline operation and expose remaining modeling error, not realistic shading.
 
 Nine tests cover transport physics/truncation, reproducibility, grouped splitting, constrained neural samples, missing exit targets, and learning two outcomes from identical inputs. The larger gather revealed accumulated ray-direction roundoff; directions are now normalized at each interface. The original pilot NPZ is retained for provenance but is superseded by pilot_v2.
 
-Next: improve model/data coverage and evaluate joint spatial/angular distributions against an unconditional baseline; then implement the boundary render adapter and a properly measured RDM-prior combination. eval.py remains unchanged by this milestone.
+Next: improve model/data coverage and evaluate joint spatial/angular distributions against an unconditional baseline; then implement the learned interior render adapter and a properly measured RDM-prior combination. eval.py remains unchanged by this milestone.
 
 
-## Implemented milestone: boundary render adapter
+## Implemented milestone: learned interior render adapter
 
-`render_boundary.py` renders a fixed checkpoint geometry under the shared studio rig, using scalar spectral Mitsuba intersections and batched PyTorch boundary inference. It supports neural and analytic modes with the same camera, geometry, lights, sensor and depth settings. It writes frames/frame_0000.exr, frames/frame_0000.png and render.json with model hash, timings and failure counters. It refuses to overwrite an existing output directory.
+`render_learned_interior.py` renders a fixed checkpoint geometry under the shared studio rig, using scalar spectral Mitsuba intersections and batched PyTorch learned interior inference. It supports neural and analytic modes with the same camera, geometry, lights, sensor and depth settings. It writes frames/frame_0000.exr, frames/frame_0000.png and render.json with model hash, timings and failure counters. It refuses to overwrite an existing output directory.
 
 At an exterior stone hit it samples the Fresnel entry branch. Reflection remains analytic. On transmission it samples the neural operator conditional on transmission; it does NOT multiply by entry T again because branch sampling already accounts for T. A learned escaped event resumes tracing from its predicted exit surface. Scene occlusion and diffuse bounces remain explicit; subsequent exterior stone encounters can invoke the operator again. Exits that geometrically reenter the stone are rejected and counted. Finite-depth failures contribute zero, matching the dataset's finite-depth convention, not an infinite-depth unbiased claim.
 
@@ -102,37 +102,37 @@ The spectral sensor wavelength weight is retained and its first wavelength is tr
 Run the new model (use a fresh output directory):
 
 ```powershell
-python -B pipeline/render_boundary.py --model checkpoints/boundary_model_pilot/model.pt --output_dir renders/boundary_neural_02 --width 128 --height 128 --spp 32
-python -B pipeline/render_boundary.py --model checkpoints/boundary_model_pilot/model.pt --output_dir renders/boundary_analytic_02 --mode analytic --width 128 --height 128 --spp 32
+python -B pipeline/render_learned_interior.py --model checkpoints/boundary_model_pilot/model.pt --output_dir renders/boundary_neural_02 --width 128 --height 128 --spp 32
+python -B pipeline/render_learned_interior.py --model checkpoints/boundary_model_pilot/model.pt --output_dir renders/boundary_analytic_02 --mode analytic --width 128 --height 128 --spp 32
 ```
 
 `--azimuth` moves the camera around the fixed stone. `--scene_depth` controls surrounding-scene steps; the internal analytic cap comes from the checkpoint metadata (128 for the pilot). Output is a single frame; eval.py and its old checkpoints remain a separate rendering path. The box pixel filter differs from eval.py's Gaussian filter, so comparisons should use this adapter's paired modes.
 
-Validation: tests/test_boundary_render.py runs scalar spectral checks in a separate process to avoid cross-test Mitsuba variant changes. Both the analytic path and a controlled unit-throughput neural operator reproduce a unit constant environment within Monte Carlo tolerance. The controlled operator makes thousands of real neural-adapter queries and checks no rejected exits. This is an energy-bookkeeping test, not model-quality validation.
+Validation: tests/test_learned_interior_render.py runs scalar spectral checks in a separate process to avoid cross-test Mitsuba variant changes. Both the analytic path and a controlled unit-throughput neural operator reproduce a unit constant environment within Monte Carlo tolerance. The controlled operator makes thousands of real neural-adapter queries and checks no rejected exits. This is an energy-bookkeeping test, not model-quality validation.
 
-Generated paired pilot previews: renders/boundary_neural_01 and renders/boundary_analytic_01, each 128x128 at 32 spp. Neural: 273,280 boundary queries, zero predicted reentries, 442 scene-cap terminations, about 90.7 seconds. Analytic: 263,451 successful exits, 545 internal truncations, 59 invalid internal paths, one unexpected inside hit, 404 scene-cap terminations, about 57.3 seconds. Runs were concurrent; these timings are not controlled speed benchmarks. Both images retain visible spectral sampling noise. Inspection shows the neural render is broad/smooth and misses the reference facet pattern. This confirms a working render path, not realistic model fidelity.
+Generated paired pilot previews: renders/boundary_neural_01 and renders/boundary_analytic_01, each 128x128 at 32 spp. Neural: 273,280 learned interior queries, zero predicted reentries, 442 scene-cap terminations, about 90.7 seconds. Analytic: 263,451 successful exits, 545 internal truncations, 59 invalid internal paths, one unexpected inside hit, 404 scene-cap terminations, about 57.3 seconds. Runs were concurrent; these timings are not controlled speed benchmarks. Both images retain visible spectral sampling noise. Inspection shows the neural render is broad/smooth and misses the reference facet pattern. This confirms a working render path, not realistic model fidelity.
 
 Next work: improve/validate the learned spatial-angular distribution, address flagged geometry events, incorporate an RDM prior with a compatible probability measure, and evaluate converged paired renders over held-out views and lights. There is no demonstrated quality or speed advantage yet.
 
 
 ## Implemented milestone: RDM proposal with compatible physical density
 
-`build_boundary_prior.py` builds an object-space directional RDM from escaped TRAINING records only, bound by hashes to the exact checkpoint/source dataset. It conditions on entering and escaping the stone, unlike the legacy first-hit-local depth>k RDM. Do not pass old rdm.npz files to the boundary renderer. The pilot table uses 4x8 incoming and outgoing bins and 1,624 training escape records, with 5% uniform-sphere support.
+`build_learned_interior_prior.py` builds an object-space directional RDM from escaped TRAINING records only, bound by hashes to the exact checkpoint/source dataset. It conditions on entering and escaping the stone, unlike the legacy first-hit-local depth>k RDM. Do not pass old rdm.npz files to the learned interior renderer. The pilot table uses 4x8 incoming and outgoing bins and 1,624 training escape records, with 5% uniform-sphere support.
 
-`neural/boundary_prior.py` samples an outgoing direction uniformly in solid angle within the selected RDM cell. It then samples a triangle proportionally to its outward projected area A_f max(n_f dot d,0), followed by a uniform point on that triangle. Its joint area/solid-angle density is p_RDM(d|wi) max(n_f dot d,0) / sum_j A_j max(n_j dot d,0).
+`neural/learned_interior_prior.py` samples an outgoing direction uniformly in solid angle within the selected RDM cell. It then samples a triangle proportionally to its outward projected area A_f max(n_f dot d,0), followed by a uniform point on that triangle. Its joint area/solid-angle density is p_RDM(d|wi) max(n_f dot d,0) / sum_j A_j max(n_j dot d,0).
 
-BoundaryModel.log_exit_pdf now converts the neural conditional density to that same measure. The position Jacobian is 2 A_f b0 b1 b2 for the two barycentric logits; the direction Jacobian is cos(theta)^3 for the two tangent slopes. The categorical triangle probability is included. These are conditional escape PDFs; escape probability is still sampled separately.
+LearnedInteriorModel.log_exit_pdf now converts the neural conditional density to that same measure. The position Jacobian is 2 A_f b0 b1 b2 for the two barycentric logits; the direction Jacobian is cos(theta)^3 for the two tangent slopes. The categorical triangle probability is included. These are conditional escape PDFs; escape probability is still sampled separately.
 
 The proposal is q=(1-alpha)p_neural+alpha*p_RDM_joint. Conditional transport weight is p_neural/q, bounded above by 1/(1-alpha). This preserves the LEARNED target, including its spatial/spectral dependence, rather than correcting it toward ground truth. The renderer still rejects/counts stone-reentering exits. alpha=0 calls the original sampler unchanged. alpha must be below 1 so the neural proposal retains support. The prior does not alter model weights or recover missing facet structure.
 
 Commands (prior output already exists for the pilot; build only for new checkpoints):
 
 ```powershell
-python -B analysis/build_boundary_prior.py --model checkpoints/boundary_model_pilot/model.pt --data checkpoints/boundary_model_pilot_v2.npz --output checkpoints/boundary_model_pilot/rdm_prior.npz
-python -B pipeline/render_boundary.py --model checkpoints/boundary_model_pilot/model.pt --rdm_prior checkpoints/boundary_model_pilot/rdm_prior.npz --prior_fraction 0.25 --output_dir renders/boundary_prior_02 --width 128 --height 128 --spp 32
+python -B analysis/build_learned_interior_prior.py --model checkpoints/boundary_model_pilot/model.pt --data checkpoints/boundary_model_pilot_v2.npz --output checkpoints/boundary_model_pilot/rdm_prior.npz
+python -B pipeline/render_learned_interior.py --model checkpoints/boundary_model_pilot/model.pt --rdm_prior checkpoints/boundary_model_pilot/rdm_prior.npz --prior_fraction 0.25 --output_dir renders/boundary_prior_02 --width 128 --height 128 --spp 32
 ```
 
-Validation: all 14 boundary tests pass. Added checks for analytic transformation Jacobians, solid-angle sampling, outward support, mixture mass preservation, weight bound, and alpha=0 equivalence. Paired 64x64/32-spp renders at seeds 71 and 72 were evaluated over 2,092 primary diamond pixels. compare_boundary_sampling.py saves the diagnostic to renders/boundary_sampling_comparison.json.
+Validation: all 14 learned interior tests pass. Added checks for analytic transformation Jacobians, solid-angle sampling, outward support, mixture mass preservation, weight bound, and alpha=0 equivalence. Paired 64x64/32-spp renders at seeds 71 and 72 were evaluated over 2,092 primary diamond pixels. compare_learned_interior_sampling.py saves the diagnostic to renders/boundary_sampling_comparison.json.
 
 Observed result: prior/baseline paired luminance variance ratio 1.202 (about 20% MORE noise with the 25% RDM mixture). Mean diamond luminance was 0.004037 versus 0.003945; two seeds do not establish a systematic energy difference. Concurrent run times were about 32-34 s with the prior versus 22 s without; these are not controlled performance benchmarks. The coarse prior is therefore opt-in and not recommended as a demonstrated improvement. This experiment measures variance around the learned target, not error against physical reference.
 
@@ -141,13 +141,13 @@ Next priority is better spatial/angular model fidelity, with distribution-level 
 
 ## Implemented milestone: data scaling, convergence, and a measured negative render result
 
-This milestone answers the standing question of whether the boundary model was data limited, capacity limited, or representation limited. It is representation limited. The learned operator now fits its training distribution well and still produces an image that is spatially uncorrelated with analytic transport, at higher variance and higher cost.
+This milestone answers the standing question of whether the learned interior model was data limited, capacity limited, or representation limited. It is representation limited. The learned operator now fits its training distribution well and still produces an image that is spatially uncorrelated with analytic transport, at higher variance and higher cost.
 
-`gather_boundary.py` accepts `--workers`. Single-worker output is bit-identical to the previous implementation, so existing dataset provenance is unaffected. Parallel chunks receive entry ranges through `numpy.random.SeedSequence.spawn`, and each chunk carries an `entry_offset` so emitted `entry_id` values stay globally distinct. This matters because `split_entries` groups on `entry_id`; colliding identifiers from separate workers would silently merge unrelated entry states into one split group. The stream partition depends on the worker count, so reproduction requires the same seed AND the same `--workers`, and metadata records both. Throughput on sixteen logical cores is 1,048,576 records in 28 seconds.
+`gather_learned_interior.py` accepts `--workers`. Single-worker output is bit-identical to the previous implementation, so existing dataset provenance is unaffected. Parallel chunks receive entry ranges through `numpy.random.SeedSequence.spawn`, and each chunk carries an `entry_offset` so emitted `entry_id` values stay globally distinct. This matters because `split_entries` groups on `entry_id`; colliding identifiers from separate workers would silently merge unrelated entry states into one split group. The stream partition depends on the worker count, so reproduction requires the same seed AND the same `--workers`, and metadata records both. Throughput on sixteen logical cores is 1,048,576 records in 28 seconds.
 
 `encode_data` previously called `numpy.linalg.lstsq` once per escaped record. Only `len(faces)` distinct triangles exist, so one pseudo-inverse per triangle replaces the per-record solve exactly. The vectorized form is about 488 times faster on a 32,768-record dataset, agrees to float32 round-off, and returns identical facet, valid, escaped and clipped values. Encoding one million records now costs about 0.25 seconds rather than 131 seconds, on every training run and every evaluation.
 
-`make_boundary_subset.py` writes nested entry-grouped subsets of a gathered pool. Subsets select whole entry states, never individual paths, so every rung of a data ladder stays compatible with the entry-grouped split.
+`make_learned_interior_subset.py` writes nested entry-grouped subsets of a gathered pool. Subsets select whole entry states, never individual paths, so every rung of a data ladder stays compatible with the entry-grouped split.
 
 `flash_sweep.py` renders paired neural and analytic frames over a camera orbit and measures scintillation. The camera orbits while studio lights stay fixed, so pixel (x, y) views different geometry in each frame and no per-pixel temporal variance is defined. Every statistic is therefore correspondence-free: within-frame highlight distribution shape, and the across-frame variation of those statistics. Each configuration renders under at least two independent seeds, and the seed-to-seed spread is reported as the Monte Carlo noise floor, because sparse-highlight statistics are precisely the ones path-tracing noise inflates.
 
@@ -193,11 +193,11 @@ Interpretation. The broadening that removes flashes and the broadening that rais
 Reproduction:
 
 ```powershell
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_scale_v1/train_pool.npz --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 101 --workers 16
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_scale_v1/test_pool.npz --entries 16384 --paths_per_entry 16 --max_depth 128 --seed 202 --workers 16
-python -B analysis/make_boundary_subset.py --pool checkpoints/boundary_scale_v1/train_pool.npz --output checkpoints/boundary_scale_v1/sub_04096.npz --entries 4096
-python -B pipeline/train_boundary.py --data checkpoints/boundary_scale_v1/train_pool.npz --output checkpoints/boundary_scale_v1/final_w064c4 --epochs 80
-python -B analysis/evaluate_boundary.py --model checkpoints/boundary_scale_v1/final_w064c4/model.pt --data checkpoints/boundary_scale_v1/test_pool.npz --output checkpoints/boundary_scale_v1/final_w064c4/test_metrics.json
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_scale_v1/train_pool.npz --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 101 --workers 16
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_scale_v1/test_pool.npz --entries 16384 --paths_per_entry 16 --max_depth 128 --seed 202 --workers 16
+python -B analysis/make_learned_interior_subset.py --pool checkpoints/boundary_scale_v1/train_pool.npz --output checkpoints/boundary_scale_v1/sub_04096.npz --entries 4096
+python -B pipeline/train_learned_interior.py --data checkpoints/boundary_scale_v1/train_pool.npz --output checkpoints/boundary_scale_v1/final_w064c4 --epochs 80
+python -B analysis/evaluate_learned_interior.py --model checkpoints/boundary_scale_v1/final_w064c4/model.pt --data checkpoints/boundary_scale_v1/test_pool.npz --output checkpoints/boundary_scale_v1/final_w064c4/test_metrics.json
 python -B analysis/flash_sweep.py --model checkpoints/boundary_scale_v1/final_w064c4/model.pt --output_dir renders/flash_sweep_converged --azimuth_start 0 --azimuth_stop 45 --azimuth_step 3 --width 96 --height 96 --spp 48 --seeds 71 72
 python -B analysis/evaluate_render.py --model checkpoints/boundary_scale_v1/final_w064c4/model.pt --analytic renders/flash_hires_analytic/s101 renders/flash_hires_analytic/s102 --neural renders/flash_hires_neural/s101 renders/flash_hires_neural/s102 --output renders/flash_hires/evaluation.json
 ```

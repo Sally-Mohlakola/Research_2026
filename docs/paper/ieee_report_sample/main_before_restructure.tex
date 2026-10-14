@@ -1,0 +1,752 @@
+\documentclass[conference]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs,array}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={When Operator Accuracy Does Not Transfer to the Image},
+pdfauthor={Sally Mohlakola},pdfsubject={Learned interior transport for faceted gemstones}}
+\graphicspath{{figures/}}
+\newcommand{\dg}{^{\circ}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\spp}{\,\mathrm{spp}}
+\pagestyle{plain}
+\raggedbottom
+
+\begin{document}
+\title{When Operator Accuracy Does Not Transfer to the Image:\\
+A Learned Interior Transport Operator for Faceted Gemstones}
+\author{\IEEEauthorblockN{Sally Mohlakola}
+\IEEEauthorblockA{Honours Research Report}}
+\maketitle
+
+\begin{abstract}
+This study asks whether a compact neural appearance model, as used for
+cloth, can reproduce resolved, specular gemstones. A direction-conditioned
+radiance distribution map is first evaluated and then generalised to an
+interior transport operator that, from entry position, direction, normal and
+wavelength, predicts escape, an exit triangle, and an exit position and
+direction. Stochastic and deterministic decoders are evaluated on three diamond
+cuts against spectral reference renders with noise-corrected measures and a
+separation of operator-mediated light from untouched reflections.
+Learned exit-triangle prediction exceeds the tested lookup baselines, but this
+does not ensure image agreement: stochastic decoders reach pixel correlations of
+0.136--0.293, deep deterministic decoders 0.038--0.168 despite higher validation
+accuracy. A recorded, convergence-trained run on an independent held-out pool
+locates the failure: exit triangles are predicted correctly for 61\% of short
+paths but at most 7\% of paths meeting four or more facets, and for only 6\% of
+exits through the pavilion. The same run measures cost: each learned interior
+decision is 3.5 times faster than tracing it, yet the neural image settles at an
+error that a single analytic render already beats. Under the tested studio
+illumination, operator-level accuracy and perceived sharpness are insufficient
+proxies for rendered fidelity.
+\end{abstract}
+
+\begin{IEEEkeywords}
+neural rendering, spectral light transport, gemstones, mixture density networks,
+image evaluation, Monte Carlo rendering
+\end{IEEEkeywords}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1_overview.png}
+\caption{The learned interior operator. Camera rays meet the stone's first
+surface, where Fresnel reflection or refraction is traced exactly. A refracted
+ray's entry state (position, direction, normal, wavelength; 10 numbers) passes
+through a shared two-layer encoder to an escape head, a facet head over the
+mesh's triangles, and a 16-number embedding of the chosen facet. One of three
+decoders then places the exit on that facet (point and direction), and the exit
+ray returns to the path tracer. The deep decoder alone also reads the entry
+state through its own trunk.}
+\label{fig:overview}
+\end{figure*}
+
+\section{Introduction}
+The appearance of a faceted diamond depends on where internally reflected and
+refracted light emerges. Small changes in entry position or direction can
+change the intersected facets and redirect a path. Narrow sources produce
+high-contrast structure sensitive to these changes; dispersion adds wavelength
+dependence. An approximation must therefore preserve both transmitted energy
+and its placement.
+
+Soh and Montazeri~\cite{soh2024} aggregate explicit cloth-fibre scattering into
+a compact neural appearance model. This motivates an adaptation to gemstones,
+where visible facets and their internal reflections are resolved in the image.
+Averaging their angular structure can remove the features the renderer must
+reproduce.
+
+The research question is consequently: \emph{how faithfully can a compact
+learned interior transport operator reproduce resolved gemstone appearance, and
+which operator errors explain its image-space failures?} The study begins with
+a radiance distribution map (RDM), diagnoses its missing spatial conditioning,
+and evaluates an operator that returns the outcome of an entire interior path
+(Fig.~\ref{fig:overview}).
+
+The contributions are fourfold. First, lookup and input-ablation experiments
+quantify the benefit of spatial conditioning for exit-triangle prediction.
+Second, a factorised operator supports stochastic and deterministic placement
+while preserving explicit geometric exit constraints. Third, an evaluation
+combining noise-corrected pixel statistics, geometric-facet averages and
+path-component separation exposes a mismatch between operator accuracy and
+image agreement on three cuts. Fourth, a recorded pipeline (convergence-based
+training, an independent held-out pool, per-path-length and per-region
+diagnostics, and timing at equal quality and equal time) shows where the
+operator fails and what it costs. The conclusions concern the evaluated models,
+budgets and scene, rather than all learned representations of specular media.
+
+\section{Background and Related Work}
+\textbf{Aggregated appearance.} The cloth model of Soh and
+Montazeri~\cite{soh2024} learns an aggregate BSDF from traced fibre-level
+transport. The present study adapts the idea of compressing internal
+scattering, not the cloth geometry or its complete implementation; its results
+investigate this adaptation and are not a benchmark of the original method.
+
+\textbf{Transport through bounded objects.} Vicini et
+al.~\cite{vicini2019} learn shape-adaptive subsurface scattering with a
+conditional variational autoencoder and local shape descriptors, a precedent for
+predicting transport through a region. Here the medium is a smooth dielectric
+with discrete reflection/refraction choices and sharply directed exits.
+Classical gemstone rendering models the relevant optics~\cite{sun2000}; a
+spectral path tracer provides the reference~\cite{pharr2023,wilkie2014}.
+
+\textbf{Distributions, representations and evaluation.} Mixture density
+networks~\cite{bishop1994} represent several outcomes for one input, suiting an
+entry state that can escape by several internal routes, but do not by themselves
+guarantee accurate branch probabilities or placement. Spectral
+bias~\cite{rahaman2019} motivates Fourier features~\cite{tancik2020}; hash
+encodings~\cite{muller2022ngp} are an alternative. LEAN mapping~\cite{olano2010}
+motivates retaining second moments. SSIM and FLIP~\cite{wang2004,andersson2020}
+are complementary image criteria; this study instead emphasises noise-corrected
+luminance agreement and facet averages, and claims no SSIM or FLIP results.
+
+\section{From a Radiance Map to an Interior Operator}
+\label{sec:rdm}
+The project began as a direct adaptation of the cloth model to diamond. Its
+radiance distribution map (RDM) is gathered by firing rays at the stone,
+tracing each one through the interior, and binning the light that leaves by
+outgoing direction for each incoming direction. Small networks are fitted to
+the binned table, and the result is applied as a material on the stone's
+surface. Each step below removed one explanation for why this route did not
+produce a diamond, and together they led to the learned interior operator.
+
+\textbf{Is it a sampling problem?} Soh and Montazeri gather 50--100 million
+fully traced rays per yarn material and continue until the map
+converges~\cite{soh2024}. To give the RDM the same chance, it is gathered for
+each cut at five budgets from $2^{26}$ rays (67 million, the scale of the cloth
+dataset) to $2^{30}$ (1.07 billion), and each map is rendered under the same
+studio rig (Fig.~\ref{fig:ladder}). If the RDM's flat shading were sampling
+noise, it would sharpen along this ladder; if it persists while the bins
+converge, the limit lies in what the map conditions on rather than in how many
+rays fill it. \emph{[Ladder renders pending; this paragraph will report what
+changes between $2^{26}$ and $2^{30}$.]}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.78\textwidth]{rdm_ladder.pdf}
+\caption{RDM renders against gathering budget, after the 50--100 million rays
+per material of the cloth model~\cite{soh2024}. For each cut the large panel
+uses $2^{30}$ rays and the stacked panels $2^{26}$ to $2^{29}$; all use the same
+studio rig and render settings. \emph{Placeholder layout: renders pending.}}
+\label{fig:ladder}
+\end{figure*}
+
+\textbf{Averaging erases the detail.} Each bin stores the mean of the paths
+that land in it. In 99.8\% of well-populated bins the standard deviation
+exceeds that mean (median ratio 2.53), so each stored value summarises a
+distribution several times wider than itself. More rays make that mean more
+precise; they do not make the distribution narrower.
+
+\textbf{Restoring variation is not restoring placement.} A moment-based
+modification after LEAN mapping~\cite{olano2010} activates shading points with
+probability $p=1/(1+r^2)$ at gain $1/p$, where $r$ is a bin's relative standard
+deviation. This preserves the moments in expectation and brings back the
+\emph{amount} of sparkle, but the bright points are statistically right and
+spatially arbitrary: the result reads as speckle, not as reflections.
+
+\textbf{The missing variable is position.} Asked to predict the exit triangle,
+a table conditioned on entry direction, as the RDM is, scores 0.068 with 32
+cells and only 0.098 with 2,048, against 0.047 for the most frequent triangle;
+conditioning on the entry triangle instead reaches 0.192. Resolution is not the
+limit, the conditioning variable is. In yarn, light enters and leaves within a
+sub-pixel cross-section, so direction suffices; in a brilliant cut, \emph{where}
+light enters decides which facet it leaves through. The learned interior
+operator follows from this: it keeps the RDM's idea of replacing the interior
+with a learned answer, but conditions on entry position, direction, normal and
+wavelength, and returns a single exit rather than a binned average.
+
+\section{Method}
+\label{sec:method}
+\subsection{Scene, geometry and reference transport}
+All comparisons use one studio scene: a perspective camera with a $30\dg$ field
+of view, a grey diffuse ground plane, textured area lights and two small intense
+sources, i.e.\ \emph{one lighting rig with several sources}. The non-uniform
+illumination makes exit-direction errors visible by assigning different radiance
+to different parts of the environment.
+
+Rendering uses the scalar spectral variant of Mitsuba 3~\cite{mitsuba3}. The
+reference samples Fresnel reflection or refraction, applies wavelength-dependent
+refraction from a diamond Sellmeier model, and traces each interior path until
+escape or a depth cap of 128, sampling the BSDF without next-event estimation.
+Absorption and body colour are not modelled. The \emph{analytic reference} names
+these explicit transport rules; a finite-sample image is not asserted to be
+converged ground truth.
+
+
+The three procedural meshes are a round brilliant, pear brilliant and step cut
+with 64, 62 and 112 triangles, grouped into 57, 33 and 50 coplanar facets, of
+which 25, 17 and 25 are visible in the evaluated view. The round uses crown
+angle $34.5\dg$, pavilion angle $40.75\dg$ and table fraction 0.56. Validation
+checks closedness, manifold edges, outward orientation and degenerate faces.
+The operator classifies \emph{triangles}, which are not optical facets: the
+round's table alone is eight triangles. Geometry hashes stored with data and
+checkpoints detect mesh mismatches.
+
+\subsection{Conditional exit representation}
+The entry vector $\mathbf{x}\in\R^{10}$ comprises position $\mathbf{p}$,
+interior direction $\boldsymbol\omega$, entry normal $\mathbf{n}$ and wavelength
+$\lambda$, with positions divided by the mesh radius and $\lambda$ encoded as
+$(\lambda-595)/235$ (nm). With $e$ escape before the depth cap, $f$ an exit
+triangle and $\mathbf{y}\in\R^4$ exit coordinates,
+\begin{equation}
+ p(e=1,f,\mathbf{y}\mid\mathbf{x})=
+ s_\theta(\mathbf{x})\,\pi_\theta(f\mid\mathbf{x})\,
+ q_\theta(\mathbf{y}\mid\mathbf{x},f),
+\end{equation}
+with $p(e=0\mid\mathbf{x})=1-s_\theta(\mathbf{x})$, making non-escape explicit
+instead of assigning an artificial exit to a truncated path. Two coordinates
+are barycentric logits and two are outgoing tangent slopes:
+\begin{equation}
+ \boldsymbol\beta=\operatorname{softmax}(y_1,y_2,0),\quad
+ \boldsymbol\omega_{\rm out}=
+ \frac{\mathbf{n}_f+y_3\mathbf{t}_f+y_4\mathbf{b}_f}
+ {\|\mathbf{n}_f+y_3\mathbf{t}_f+y_4\mathbf{b}_f\|},
+\end{equation}
+with exit point $\mathbf{p}_{\rm out}=\sum_j\beta_j\mathbf{v}_{fj}$. This places
+every exit on the selected triangle and in its outward hemisphere, but does not
+ensure a physically valid internal route.
+
+\subsection{Model variants and optimisation}
+Fig.~\ref{fig:overview} shows the architecture. A two-layer, width-64 SiLU
+encoder feeds escape and triangle heads; a learned
+16-dimensional triangle embedding conditions the coordinate decoder. The
+\emph{stochastic} model uses four diagonal Gaussian mixture
+components~\cite{bishop1994}. The \emph{clone} regresses one coordinate vector
+with smooth-L1 loss. The \emph{deep clone} uses a four-layer decoder with a
+separate encoder. All variants sample the exit triangle; ``deterministic''
+refers only to placement given that triangle. On the round cut they have
+17,637, 15,557 and 28,741 trainable parameters. Training minimises
+\begin{equation}
+ \mathcal L_i=\operatorname{BCE}(s_\theta(\mathbf{x}_i),e_i)
+ +e_i\left[-\log\pi_\theta(f_i\mid\mathbf{x}_i)
+ +\ell_{\rm coord}(\mathbf{y}_i)\right],
+\end{equation}
+where $\ell_{\rm coord}$ is mixture negative log-likelihood or smooth-L1, so
+total losses are not comparable across families. Adam~\cite{kingma2015} uses
+learning rate $10^{-3}$, batch 256 and gradient clipping at norm 10.
+
+Two training regimes appear. The historical three-cut runs use fixed budgets
+(80 epochs stochastic, 30 deep) and keep the best validation checkpoint. The
+\emph{recorded} run (Sec.~\ref{sec:recorded}) instead trains to convergence: it
+stops once the best validation objective has improved by no more than $10^{-3}$
+for five consecutive epochs, and records training and validation losses, timing,
+the command and all input hashes. Decoder comparisons share a training pool per
+cut but also change objective and, for the deep clone, capacity; they are model
+comparisons, not single-variable ablations.
+
+\subsection{Data and render integration}
+Each pool contains 1,048,576 path records from 65,536 entry states drawn to
+match the camera's queries over all azimuths. Invalid records are excluded and
+all outcomes of an entry state stay on one side of the training/validation
+split. For the recorded run a second pool, gathered independently with a
+different seed (262,144 records from 16,384 entry states), is used \emph{only}
+for testing, so held-out scores are separate from checkpoint selection.
+
+During rendering, entry reflection or transmission follows the analytic Fresnel
+rule. Transmitted entries are batched (512) and sent to the operator; each
+sampled exit starts a new scene ray, non-escaping events terminate, and exits
+that immediately re-enter the stone are discarded. The outside scene and
+first-surface reflection use identical code in both modes. The learned
+replacement approximates the interior transport and is not an unbiased
+estimator of it.
+
+\section{Evaluation Methodology}
+\label{sec:evaluation}
+\subsection{Sampling, masking and noise baselines}
+Renders are $512\times512$ with a box filter. Four independent seeds at
+$32\spp$ form a $128\spp$ average per mode; splitting them yields two independent
+$64\spp$ halves. Metrics use the mask $M$ of pixels whose primary ray hits the
+stone, on linear luminance (Rec.~709 weights); ground caustics lie outside $M$.
+The analytic image compared with its own other half gives the \emph{noise
+floor}: the agreement sampling noise alone permits at that budget. It is an
+empirical baseline, not a strict bound, and does not establish reference
+convergence.
+
+\subsection{Image measures}
+For neural and reference luminance $N_p,A_p$ the measures are: Pearson
+correlation $\rho(N,A)$ of matching halves (does light fall in the right
+place?); signed relative energy error
+$\epsilon_E=\sum_M N_p/\sum_M A_p-1$ (is the total right?); relative RMSE;
+highlight overlap of the brightest 1\% of pixels; and contrast, the standard
+deviation over the mean. The recorded run adds four noise-aware measures.
+\emph{Disattenuated correlation} $\rho/\sqrt{r_Nr_A}$ divides by each image's
+half-split reliability $r$ to estimate agreement without sampling noise.
+\emph{Rank} and \emph{log-luminance} correlations check that a score is not
+driven by a few bright pixels. \emph{Noise-free contrast} uses the covariance of
+independent halves in place of a variance, removing the noise that otherwise
+inflates contrast. Ninety-five percent intervals come from bootstrapping
+$16\times16$-pixel blocks (pixels) or facets (facet means), which respects
+spatial correlation. The measures are read jointly, not combined.
+
+\subsection{Facet averages and component separation}
+\label{sec:facets}
+Coplanar triangles are grouped into facets; each visible facet covering at
+least 20 pixels contributes its mean luminance, and correlation is computed
+across facets with equal weight, removing within-facet structure by design.
+Each camera path is also tagged by whether it passed through the interior
+replacement, so the frame splits exactly as $I=I_{\rm operator}+I_{\rm
+untouched}$; \emph{interior-only} scores use $I_{\rm operator}$.
+
+\subsection{Operator diagnostics}
+On held-out paths, \emph{top-1 accuracy} asks whether the operator's most
+probable triangle is the traced exit triangle; \emph{exit angle} is the error of
+the decoded direction when the true triangle is supplied, isolating placement
+from selection. The recorded run breaks both down by path length and by exit
+region.
+
+\section{Results}
+\label{sec:results}
+\subsection{Spatial conditioning and learned prediction}
+\begin{table}[t]
+\caption{Round-cut exit-triangle prediction. Nearest-neighbour results use
+4,096 queries over 1,046,359 stored paths.}
+\label{tab:baselines}
+\centering\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Predictor & Top-1 accuracy \\
+\midrule
+Most frequent triangle & 0.047 \\
+Entry-direction table (32 / 2,048 cells) & 0.068 / 0.098 \\
+Entry-triangle table & 0.192 \\
+Nearest neighbour / majority of eight & 0.287 / 0.343 \\
+Stochastic operator & 0.380 \\
+Clone operator & 0.410 \\
+Stochastic, recorded run, independent test pool & 0.374 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The learned operators exceed every lookup (Table~\ref{tab:baselines}); the
+clone is 43\% above the nearest neighbour. A lookup is a non-parametric
+comparator, not an upper bound on learnability. In a 60-epoch conditioning
+ablation (seed 23, same split), removing position reduces top-1 from 0.404 to
+0.273 and keeping only direction yields 0.117, whereas removing wavelength
+changes it by 0.0003. Position therefore matters under this protocol; the small
+wavelength effect does not imply that the physical system lacks dispersion.
+
+\subsection{Validation behaviour}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.8\textwidth]{validation_curves.pdf}
+\caption{Validation histories of the historical runs. Solid: stochastic decoder;
+dashed: deep deterministic decoder. Triangle accuracy and cross-entropy are
+comparable across families; total losses are not. Single training seed.}
+\label{fig:validation}
+\end{figure*}
+
+
+
+Learning improves triangle prediction on all cuts (Fig.~\ref{fig:validation}),
+and deep models reach higher validation accuracy than their stochastic
+counterparts: 0.392 against 0.371 on the round, 0.338 against 0.311 on the pear
+and 0.328 against 0.305 on the step cut, with lower triangle cross-entropy. Several selected
+checkpoints fall on the final epoch, so these fixed-budget curves do not
+establish convergence. The recorded run removes this doubt for the round
+stochastic model (Fig.~\ref{fig:training}): trained to the convergence
+criterion it stops at epoch 62 (best 57, 777\,s) with validation accuracy
+0.375, within 0.004 of the fixed-budget model. Validation loss flattens while
+training loss keeps falling, so further epochs would mainly fit the training
+pool; the network is not under-trained in this configuration.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{training_curves.pdf}
+\caption{Recorded run (round, stochastic): training and validation loss and
+validation exit-facet accuracy per epoch. Dashed: the best epoch; training
+stopped five epochs later when validation loss had improved by no more than
+$10^{-3}$.}
+\label{fig:training}
+\end{figure}
+
+ The round stochastic model's mean predicted escape probability (0.9984)
+also matches the measured escape fraction (0.9975), although with rare
+non-escapes this is agreement of rates rather than of individual events.
+
+\subsection{Sharper images have lower pixel agreement}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{gia_three_heads.png}
+\caption{Round-cut renders: stochastic, clone, deep clone and analytic
+reference at 128 spp. Deterministic placement restores sharp features but not
+their locations. Embedded scores use all seeds; Table~\ref{tab:images} uses
+64-spp half-splits.}
+\label{fig:round}
+\end{figure*}
+
+\begin{table*}[t]
+\caption{Matched three-cut image evaluation (historical runs). Four 32-spp seeds
+per mode; pixel correlation, relative RMSE, highlight overlap and energy use
+64-spp halves; contrast and facet correlation (across visible facet means, each
+weighted equally) use the full average. ``Reference halves'' is the noise
+baseline.}
+\label{tab:images}
+\centering\small
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+Cut & Decoder/comparison & Pixel corr. $\uparrow$ & Rel. RMSE $\downarrow$ & Top-1\% overlap $\uparrow$ & Energy error & Contrast & Facet corr. $\uparrow$ \\
+\midrule
+Round & Stochastic & 0.152 & 3.750 & 0.197 & $-0.8\%$ & 0.93 & 0.399 \\
+ & Clone & 0.048 & 4.741 & 0.071 & $+26.4\%$ & 2.35 & 0.288 \\
+ & Deep clone & 0.038 & 4.849 & 0.117 & $+13.8\%$ & 2.74 & 0.038 \\
+ & Reference halves & 0.957 & 1.140 & 0.777 & $+0.6\%$ & 3.78 & 0.9996 \\
+\midrule
+Pear & Stochastic & 0.136 & 1.834 & 0.007 & $+17.3\%$ & 0.89 & 0.645 \\
+ & Deep clone & 0.054 & 3.795 & 0.002 & $+47.8\%$ & 2.31 & 0.414 \\
+ & Reference halves & 0.899 & 0.684 & 0.595 & $+0.4\%$ & 1.48 & 0.9996 \\
+\midrule
+Step & Stochastic & 0.293 & 2.353 & 0.059 & $+14.2\%$ & 0.84 & 0.880 \\
+ & Deep clone & 0.168 & 2.956 & 0.057 & $+15.3\%$ & 1.77 & 0.899 \\
+ & Reference halves & 0.942 & 0.817 & 0.650 & $-0.3\%$ & 2.37 & 0.9997 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{operator_breakdown.pdf}
+\caption{Recorded run, 261,632 escaped held-out paths from the independent
+test pool. (a) Exit-triangle top-1 accuracy by the number of facets a path meets
+inside the stone; the second tick line is each group's share of paths (the
+1-facet group has only 82 paths, grey). (b) Angle between the decoded and traced
+exit when the true triangle is supplied: median (dot) and 90th percentile.
+(c) Share of exits through each region that the operator also sends there; bar:
+whole region, dot: one triangle (8 table, 24 crown, 24 of 32 pavilion triangles
+with at least 20 test exits; horizontal spread is for visibility only). The
+second tick line is the region's share of all exits.}
+\label{fig:breakdown}
+\end{figure*}
+
+Under the tested rig, deterministic decoders produce sharper, higher-contrast
+images but lower pixel correlation and higher relative RMSE on every cut
+(Fig.~\ref{fig:round}, Table~\ref{tab:images}): round 0.038 against 0.152, pear
+0.054 against 0.136, step 0.168 against 0.293, while reference halves agree at
+0.899--0.957. The stochastic round image nearly preserves energy, yet its
+contrast is 0.93 against 3.78: energy agreement does not imply structure.
+Conversely, the pear deep clone exceeds reference contrast (2.31 against 1.48)
+with a $+47.8\%$ energy error, so a sharper image is not necessarily better in
+placement or radiometry. Highlight overlap stays far below the reference's own,
+independently confirming misplaced bright structure.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{pear_heads.png}\\[2pt]
+\includegraphics[width=\columnwidth]{step_heads.png}
+\caption{Pear (top) and step (bottom): stochastic and deep-clone results beside
+their references (128 spp). Broad shape and brightness organisation survive
+even when fine internal reflections are incorrect.}
+\label{fig:cuts}
+\end{figure}
+
+\subsection{Coarse agreement is a distinct result}
+
+Facet averaging changes the interpretation (last column of Table~\ref{tab:images}). Stochastic
+facet correlations are 0.399, 0.645 and 0.880 for round, pear and step; the deep
+clone's are 0.038, 0.414 and 0.899, against reference self-agreement above
+0.9995. The step deep clone thus reproduces coarse facet brightness well despite
+low pixel correlation. Operator improvement does not worsen \emph{every}
+statistic: the effect depends on spatial scale, and a facet mean intentionally
+discards the sparkle whose placement fails.
+
+\subsection{Branch selection and within-branch placement}
+Within a recorded exit triangle, stochastic samples spread by a median of about
+$26.0\dg$, whereas traced branches are almost collimated. A clone has no spread,
+but its mean direction error given the true triangle is still about $24.7\dg$:
+determinism removes blur without establishing placement. Decoding the same
+stochastic checkpoint at component means cuts spread from $26.0\dg$ to
+$8.1\dg$, yet image correlation falls from 0.174 to 0.153.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.88\columnwidth]{oracle_facet.png}
+\caption{Clone, clone supplied with the traced exit triangle, and reference
+(256 spp). The correct triangle restores contrast but not placement.}
+\label{fig:oracle}
+\end{figure}
+
+Supplying the clone with the traced exit triangle restores contrast (3.73
+against 3.74) but correlation stays at 0.041 (Fig.~\ref{fig:oracle}): the
+diamond \emph{looks} right but its highlights land in the wrong places, which
+implicates within-triangle placement even when selection is bypassed.
+
+\subsection{A recorded, converged run}
+\label{sec:recorded}
+To test the evaluation pipeline end to end, one configuration (round cut,
+stochastic decoder, seed 23) was re-run from gathered data to final figures with
+every input and setting recorded. It is a single configuration: the same
+pipeline is set up for all three cuts, both decoders and three training seeds,
+and those runs are pending.
+
+\begin{table}[t]
+\caption{Recorded run: image agreement with the analytic reference (round cut,
+stochastic decoder, $4\times32\spp$). Brackets: 95\% block-bootstrap interval;
+``floor'': the analytic image against its own other half.}
+\label{tab:recorded}
+\centering\small
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Measure & Whole stone & Interior only \\
+\midrule
+Pixel correlation & 0.141 [0.090, 0.235] & 0.077 [0.063, 0.107] \\
+\quad noise floor & 0.957 & 0.959 \\
+Disattenuated correlation & 0.213 & 0.156 \\
+Rank / log correlation & 0.32 / 0.33 & 0.21 / 0.23 \\
+Facet correlation & 0.352 [0.03, 0.90] & 0.246 [0.03, 0.76] \\
+Energy error & $-1.7\%$ & $-1.9\%$ \\
+Noise-free contrast (ref.) & 0.77 (3.74) & 0.59 (4.32) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\columnwidth]{quality_vs_time.pdf}
+\caption{Error against render time for the recorded run (whole stone). Solid:
+rendered seeds; dashed: the error model's extrapolation (analytic: variance
+falls as $1/k$; neural: a fixed bias plus variance$/k$).}
+\label{fig:quality}
+\end{figure}
+
+\textbf{The earlier result reproduces.} Table~\ref{tab:recorded} matches the
+historical round stochastic row of Table~\ref{tab:images} (correlation 0.141
+against 0.152, inside the new interval). Removing sampling noise
+(disattenuated 0.213) or the influence of bright pixels (rank 0.32, log 0.33)
+raises the score but leaves it far below the floor, so the disagreement is
+structural rather than noise or a few highlights. The interior-only correlation
+(0.077) is roughly half the whole-stone value: the light that actually passes
+through the network agrees least, and untouched reflections lift the
+whole-stone score. The facet interval is wide because only 25 facets are
+visible, so facet scores from a single view should be read with caution.
+
+
+\textbf{Where the operator fails.} On the independent test pool the operator
+chooses the correct exit triangle for 37.4\% of paths, matching its validation
+score (37.5\%), so it generalises to new entry states rather than memorising the
+training pool. Fig.~\ref{fig:breakdown} shows that this average hides two
+regimes. Paths meeting two or three facets (58\% of all paths) are predicted
+correctly 61\% of the time and, given the right triangle, leave within a median
+$8\dg$ of the traced direction. For paths meeting four or more facets (42\%),
+accuracy collapses to 2--7\% and the median exit error grows to
+$28\dg$--$46\dg$. By region, exits through the table are predicted correctly
+58\% of the time and through the crown 38\%, but through the pavilion only 6\%,
+although the pavilion carries a quarter of all exiting light. The crown splits
+into two groups of triangles near 55\% and 15--29\%, the lower group having
+half the training exits. The pavilion's failure, however, is not a data
+shortage: its large triangles each have about $1.6\times10^4$ training exits yet
+score 2--13\%. The operator is therefore reliable for short routes out of the
+top of the stone and fails for long, many-bounce routes, which are exactly the
+paths whose exits depend most sensitively on entry state.
+
+\subsection{Cost at equal time and equal quality}
+\begin{table}[t]
+\caption{Recorded cost, round cut, $512\times512$, 32 spp per render, mean of
+four seeds (four renders in parallel on a 16-thread AMD CPU). Error is relative
+RMSE against the converged analytic image (Sec.~\ref{sec:recorded}).}
+\label{tab:cost}
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+& Analytic & Neural \\
+\midrule
+Render time (s) & \textbf{538} & 737 \\
+Time per interior decision ($\mu$s) & 63 & \textbf{18} \\
+Interior share of render time & 49\% & 10\% \\
+Error after four renders & \textbf{0.56} & 3.69 \\
+Error at equal time (2,950 s) & \textbf{0.48} & 3.69 \\
+Lowest reachable error & $\to 0$ & 3.65 \\
+Time to reach the other's best & \textbf{51 s} & never \\
+Training time & -- & 777 s \\
+Model size & 1 KB mesh & 70 KB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.84\columnwidth]{timing.pdf}
+\caption{Where the time goes (recorded run). (a) Render time split into
+interior decisions (dark) and everything else (light), with the seed range.
+(b) Cost of one interior decision against batch size: a standalone benchmark
+(curve, 10th--90th percentile band), the recorded run's benchmark (squares,
+different machine load), the analytic trace in the renderer (dashed) and the
+network in the renderer at its mean batch (diamond).}
+\label{fig:timing}
+\end{figure}
+
+Table~\ref{tab:cost} and Figs.~\ref{fig:timing} and~\ref{fig:quality} answer
+whether the operator saves time. Error is measured against the converged analytic image: the
+analytic error is its sampling variance, which falls with every extra render,
+while the neural error is a fixed bias (from the mismatch in
+Table~\ref{tab:recorded}) plus a smaller variance. Each learned interior
+decision is 3.5 times faster than tracing it, and the interior's share of the
+render drops from 49\% to 10\% (Fig.~\ref{fig:timing}a). Yet a full neural
+render is 37\% \emph{slower}: the time outside the interior grows from 272\,s to
+661\,s, spent gathering entry states into batches, preparing their inputs and
+decoding the returned exits. Batch size explains why the per-decision saving is
+modest (Fig.~\ref{fig:timing}b). Queried one at a time the network costs about
+0.7\,ms, ten times more than tracing; it only overtakes tracing beyond about ten
+queries per batch, and reaches 3.5--5\,$\mu$s at 512. The renderer asks for
+batches of 512, but as paths terminate its batches average only 80 queries, so
+each decision costs 18\,$\mu$s rather than 4. More importantly, the neural error levels off at 3.65, whereas a single analytic
+render already reaches 1.12 and the error model places the analytic image at
+the neural floor after about 51\,s. At equal time the analytic error is 7.7 times
+lower. There is consequently no equal-quality time for the neural method: it
+cannot reach analytic quality at any budget. Historical runs agree, with neural
+renders 1.2--2.0 times slower than analytic ones across the three cuts.
+
+\subsection{Entry sampling and coverage}
+\label{sec:coverage}
+\textbf{The aim offset began with the RDM.} The first RDM gathers fired every
+ray at the stone's centre. Aiming at one point caps the incidence angle each
+facet can receive, so downward-tilted facets never saw some incoming
+directions: no checkpoint up to run~12 filled more than 41 of its 64
+incident-direction bins, and re-gathering with a centre aim reproduced 41/64.
+Firing each ray instead from a random point on a disc the size of the stone's
+silhouette, the \emph{aim offset}, together with stratified directions (uniform
+in $\cos\theta$ within each angular bin, so grazing directions are
+represented), fills all 64 bins in every later checkpoint. The current RDM
+gather keeps both. The lesson, that \emph{where} a
+ray is aimed matters as much as its direction, carried over to the operator.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{sampling_contrast.pdf}
+\caption{Entry sampling on the pear. Top: where training entries land under
+(a) uniform directions with the aim offset and (b) camera rays from a full
+orbit. Bottom: a pavilion-facing tumble pose (frame 53 of 60) rendered by
+operators trained on (b) alone and on (a) and (b) together.}
+\label{fig:sampling}
+\end{figure}
+
+\textbf{Camera sampling misses the pavilion.} The operator's gather offers two
+strategies (Fig.~\ref{fig:sampling}). Camera sampling matches what the renderer
+will ask, but a camera above the stone sees only the crown, so no entries land
+on the pavilion; uniform sampling with the RDM's aim offset puts 54\% there. In
+a 60-frame pear tumble, an operator trained on camera entries alone lets only
+46\% of queries escape when the pavilion faces the camera, and the pavilion
+renders nearly black (Fig.~\ref{fig:sampling}c). Adding uniform aim-offset entries to the camera
+pool restores escape to 100\% at every pose and lights the pavilion
+(Fig.~\ref{fig:sampling}d). Placement, however, is not repaired: correlation at
+that pose stays at 0.018 against a floor of 0.951. Coverage is necessary but not
+sufficient, and the recorded run, trained on camera entries only, should be
+read as a front-view result.
+
+\textbf{Transfer.} A pear-trained operator retargeted to an unseen round
+variant by matching facet normals scored 0.37, yet 90\% of its dominant
+highlight was untouched light: removing that patch drops correlation to
+$-0.001$, and the operator component scores 0.004. Shared reflections can
+manufacture agreement, hence the interior-only scores of
+Table~\ref{tab:recorded}.
+
+\section{Discussion}
+\subsection{Why predictive gains need not improve the image}
+For entry state $\mathbf{x}$ and exit state $z$, the image depends on
+\begin{equation}
+ L(\mathbf{x})=\int L_{\rm ext}(z)\,p(z\mid\mathbf{x})\,\mathrm{d}z.
+\end{equation}
+An objective that weights all exits alike need not prioritise those that reach
+narrow bright sources, where a small angular error matters most; triangle
+accuracy and mean angular error are thus incomplete proxies. A broad predicted
+distribution spreads energy over correct and incorrect regions, keeping some
+correlation while suppressing contrast; a sharper but misplaced one loses that
+overlap. This is consistent with the results but not a universal law, as the
+step-cut facet result shows.
+
+The recorded breakdown sharpens the account: accuracy depends less on how much
+data a triangle has than on how long the route to it is. Many-bounce routes
+change triangle whenever a path crosses any internal facet edge, so their exit
+varies rapidly with entry state, and smooth densities blend across such
+changes~\cite{rahaman2019}. Local encodings~\cite{muller2022ngp} and
+radiance-weighted objectives are hypotheses for further work. Incomplete optimisation is a weaker alternative explanation for the
+round stochastic model, which converges to the fixed-budget result. The study is
+thus an empirical failure analysis of one compact learned replacement, not a
+proof that neural transport cannot represent specular gemstones.
+
+\section{Limitations and Further Validation}
+\label{sec:limits}
+The study uses one lighting rig, mostly one pose, simplified meshes and
+mesh-specific triangle heads. The recorded pipeline has run for one
+configuration; the historical results use single training seeds and fixed
+budgets. Multi-seed runs for all cuts and decoders, and the RDM ladder
+(Fig.~\ref{fig:ladder}), are pending. Renders ran four at a time, so times
+include contention; reference convergence beyond $128\spp$ is modelled, and
+ground caustics are not evaluated.
+
+\section{Conclusion}
+A direction-conditioned radiance map was generalised to a position-conditioned
+interior transport operator. It beats the tested lookups and generalises to an
+independent test pool, but higher accuracy does not bring better fine-scale
+image agreement. A recorded run locates the failure in long internal routes and
+pavilion exits, and shows the operator faster per decision yet slower per image,
+with a bias no sample budget removes. Stronger claims await the multi-seed runs.
+
+\begin{thebibliography}{99}
+\bibitem{soh2024} G. Y. Soh and Z. Montazeri, ``Neural appearance model for cloth
+rendering,'' \emph{Computer Graphics Forum}, vol. 43, no. 4, 2024,
+doi: 10.1111/cgf.15156.
+\bibitem{vicini2019} D. Vicini, V. Koltun, and W. Jakob, ``A learned shape-adaptive
+subsurface scattering model,'' \emph{ACM Trans. Graph.}, vol. 38, no. 4,
+Art. 126, 2019, doi: 10.1145/3306346.3322974.
+\bibitem{sun2000} Y. Sun, F. D. Fracchia, and M. S. Drew, ``Rendering diamonds,''
+in \emph{Proc. 11th Western Computer Graphics Symposium}, 2000.
+\bibitem{pharr2023} M. Pharr, W. Jakob, and G. Humphreys,
+\emph{Physically Based Rendering: From Theory to Implementation}, 4th ed.
+MIT Press, 2023. [Online]. Available: \url{https://pbr-book.org/4ed/}
+\bibitem{wilkie2014} A. Wilkie, S. Nawaz, M. Droske, A. Weidlich, and J. Hanika,
+``Hero wavelength spectral sampling,'' \emph{Computer Graphics Forum}, vol. 33,
+no. 4, pp. 123--131, 2014, doi: 10.1111/cgf.12419.
+\bibitem{bishop1994} C. M. Bishop, ``Mixture density networks,'' Aston University,
+Tech. Rep. NCRG/94/004, 1994.
+\bibitem{rahaman2019} N. Rahaman \emph{et al.}, ``On the spectral bias of neural
+networks,'' in \emph{Proc. 36th Int. Conf. Machine Learning}, PMLR, vol. 97,
+pp. 5301--5310, 2019.
+\bibitem{tancik2020} M. Tancik \emph{et al.}, ``Fourier features let networks learn
+high frequency functions in low dimensional domains,'' in \emph{Advances in
+Neural Information Processing Systems}, vol. 33, pp. 7537--7547, 2020.
+\bibitem{muller2022ngp} T. M\"uller, A. Evans, C. Schied, and A. Keller,
+``Instant neural graphics primitives with a multiresolution hash encoding,''
+\emph{ACM Trans. Graph.}, vol. 41, no. 4, Art. 102, 2022,
+doi: 10.1145/3528223.3530127.
+\bibitem{olano2010} M. Olano and D. Baker, ``LEAN mapping,'' in \emph{Proc. ACM
+SIGGRAPH Symp. Interactive 3D Graphics and Games}, pp. 181--188, 2010.
+\bibitem{wang2004} Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli,
+``Image quality assessment: From error visibility to structural similarity,''
+\emph{IEEE Trans. Image Process.}, vol. 13, no. 4, pp. 600--612, 2004,
+doi: 10.1109/TIP.2003.819861.
+\bibitem{andersson2020} P. Andersson, J. Nilsson, T. Akenine-M\"oller,
+M. Oskarsson, K. \AA str\"om, and M. D. Fairchild,
+``FLIP: A difference evaluator for alternating images,''
+\emph{Proc. ACM Comput. Graph. Interact. Tech.}, vol. 3, no. 2,
+Art. 15, 2020, doi: 10.1145/3406183.
+\bibitem{mitsuba3} W. Jakob \emph{et al.}, ``Mitsuba 3 renderer,'' 2022.
+[Online]. Available: \url{https://mitsuba-renderer.org}
+\bibitem{kingma2015} D. P. Kingma and J. Ba, ``Adam: A method for stochastic
+optimization,'' in \emph{Proc. Int. Conf. Learning Representations}, 2015.
+\end{thebibliography}
+\end{document}

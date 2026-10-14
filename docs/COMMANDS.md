@@ -18,7 +18,7 @@ they matter.
 
 **Contents**
 
-1. The learned boundary operator (the method)
+1. The learned interior operator (the method)
 2. Ablations of the learned operator
 3. The RDM as an importance sampler for the operator
 4. The RDM alone (the legacy Soh-and-Montazeri-style pipeline)
@@ -26,10 +26,12 @@ they matter.
 6. Learned dispersion and fire
 7. Figures, measurement and tests
 8. Results whose commands are not in the repo
+9. The paper's experiments
+10. Recorded runs
 
 ---
 
-## 1. The learned boundary operator
+## 1. The learned interior operator
 
 The operator replaces the whole journey of light inside the stone: given where
 and how a ray enters, it predicts whether it escapes, through which facet,
@@ -39,9 +41,9 @@ where on it and in which direction. The first surface is traced exactly.
 
 ```bash
 # Round cut, camera-matched pool, held in memory (65,536 entries x 16 paths)
-python -B pipeline/gather_boundary.py --output checkpoints/camera_pool/train.npz --entries 65536 \
+python -B pipeline/gather_learned_interior.py --output checkpoints/camera_pool/train.npz --entries 65536 \
   --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 --entry_sampling camera --azimuth_range 0 360
-python -B pipeline/gather_boundary.py --output checkpoints/camera_pool/test.npz --entries 16384 \
+python -B pipeline/gather_learned_interior.py --output checkpoints/camera_pool/test.npz --entries 16384 \
   --paths_per_entry 16 --max_depth 128 --seed 402 --workers 8 --entry_sampling camera --azimuth_range 0 360
 
 # Pear, large pools written as resumable shards (rerun the same command to continue)
@@ -53,14 +55,14 @@ python -B pipeline/gather_sharded.py --output_dir checkpoints/pear_pool_uniform_
 
 `--diamond_name` picks the stone (`round_diamond_gia`, `pear_brilliant`,
 `step_cut`, `step_cut_matched`, ...; see `config/parameters.py`).
-`gather_sharded.py` defaults to `pear_brilliant`, `gather_boundary.py` to the
+`gather_sharded.py` defaults to `pear_brilliant`, `gather_learned_interior.py` to the
 round cut.
 
 ### Train
 
 ```bash
 # In memory: the mixture operator (default head)
-python -B pipeline/train_boundary.py --data checkpoints/camera_pool/train.npz \
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz \
   --output checkpoints/camera_model --epochs 80
 
 # Streaming over shards; the mixed model warm-starts from the 50M one
@@ -85,8 +87,12 @@ python -B pipeline/render_paired.py --model checkpoints/pear_deep_mixed/model.pt
   --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4 --rotation_deg 108 81 27
 
 # Tumble animation, 60 frames (resumable)
-python -B pipeline/animate_boundary.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
-  --motion tumble --frames 60 --width 384 --height 384 --spp 32 --workers 4 --fps 30 [--resume]
+python -B pipeline/animate_learned_interior.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
+  --motion tumble_xyz --frames 60 --width 384 --height 384 --spp 32 --workers 4 --fps 30 [--resume]
+
+# Spin, the motion of analytic_spin.gif: one turn about Y, seen from diamond.py's side view (--camera spin)
+python -B pipeline/animate_learned_interior.py --model <model.pt> --output_dir renders/<name> \r
+  --motion tumble --frames 36 --width 768 --height 768 --spp 32 --workers 4 --fps 12 [--mode analytic]
 
 # Side-by-side figure with the difference map
 python -B analysis/compare_figure.py --model <model.pt> --neural renders/<name>/neural_az000.exr \
@@ -113,21 +119,21 @@ The ladder uses its own uniform-entry pools, gathered before camera matching.
 
 ```bash
 # Uniform pools (training seed 101, held-out seed 202)
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_scale_v1/train_pool.npz --entries 65536 \
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_scale_v1/train_pool.npz --entries 65536 \
   --paths_per_entry 16 --max_depth 128 --seed 101 --workers 16
-python -B pipeline/gather_boundary.py --output checkpoints/boundary_scale_v1/test_pool.npz --entries 16384 \
+python -B pipeline/gather_learned_interior.py --output checkpoints/boundary_scale_v1/test_pool.npz --entries 16384 \
   --paths_per_entry 16 --max_depth 128 --seed 202 --workers 16
 
 # Nested entry-grouped subsets; the largest rung (65,536) is the full pool
 for n in 256 1024 4096 16384; do
-  python -B analysis/make_boundary_subset.py --pool checkpoints/boundary_scale_v1/train_pool.npz \
+  python -B analysis/make_learned_interior_subset.py --pool checkpoints/boundary_scale_v1/train_pool.npz \
     --output checkpoints/boundary_scale_v1/sub_$(printf %05d $n).npz --entries $n
 done
 
 # One model per rung, scored on the held-out pool
-python -B pipeline/train_boundary.py --data checkpoints/boundary_scale_v1/sub_00256.npz \
+python -B pipeline/train_learned_interior.py --data checkpoints/boundary_scale_v1/sub_00256.npz \
   --output checkpoints/boundary_scale_v1/model_00256 --epochs <about 50k steps>
-python -B analysis/evaluate_boundary.py --model checkpoints/boundary_scale_v1/model_00256/model.pt \
+python -B analysis/evaluate_learned_interior.py --model checkpoints/boundary_scale_v1/model_00256/model.pt \
   --data checkpoints/boundary_scale_v1/test_pool.npz --output checkpoints/boundary_scale_v1/model_00256/test_metrics.json
 ```
 
@@ -138,9 +144,9 @@ reproduce only with the same `--workers` (16 here).
 ### Capacity
 
 ```bash
-python -B pipeline/train_boundary.py --data checkpoints/boundary_scale_v1/train_pool.npz \
+python -B pipeline/train_learned_interior.py --data checkpoints/boundary_scale_v1/train_pool.npz \
   --output checkpoints/boundary_scale_v1/final_w064c4 --width 64 --components 4 --epochs 80
-python -B pipeline/train_boundary.py --data checkpoints/boundary_scale_v1/train_pool.npz \
+python -B pipeline/train_learned_interior.py --data checkpoints/boundary_scale_v1/train_pool.npz \
   --output checkpoints/boundary_scale_v1/final_w256c8 --width 256 --components 8 --epochs 80
 ```
 
@@ -157,7 +163,7 @@ Six arms zero one input group each (position, direction, normal, wavelength).
 
 ```bash
 # Deterministic heads instead of the mixture
-python -B pipeline/train_boundary.py --data checkpoints/camera_pool/train.npz --output checkpoints/clone_model \
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz --output checkpoints/clone_model \
   --head clone --epochs 80                     # or --head clone_deep
 
 # Decoder depth / separate trunk / loss weighting (resumable)
@@ -169,7 +175,7 @@ python -B analysis/improve_decoder.py --data checkpoints/camera_pool/train.npz \
 
 ```bash
 # Nearest-neighbour lookup on the same conditional (the 8.87 degree ceiling)
-python -B analysis/oracle_boundary.py --train checkpoints/camera_pool/train.npz \
+python -B analysis/oracle_learned_interior.py --train checkpoints/camera_pool/train.npz \
   --test checkpoints/camera_pool/test.npz --output checkpoints/camera_model/oracle.json
 
 # Rendered: the true exit facet handed to the network (an upper bound, not a renderer)
@@ -198,7 +204,7 @@ python -B analysis/compare_operators.py --data checkpoints/camera_pool/test.npz 
 
 ```bash
 # The same gather with the other entry distribution
-python -B pipeline/gather_boundary.py ... --entry_sampling uniform      # or camera
+python -B pipeline/gather_learned_interior.py ... --entry_sampling uniform      # or camera
 # Mixed training: see train_streaming.py with two --shards directories in section 1
 ```
 
@@ -253,25 +259,25 @@ changes. `a` is `--prior_fraction` (default 0.25).
 
 ```bash
 # 1. Build the prior from the model's training entries (4 x 8 direction bins by default)
-python -B analysis/build_boundary_prior.py --model checkpoints/<model>/model.pt \
+python -B analysis/build_learned_interior_prior.py --model checkpoints/<model>/model.pt \
   --data checkpoints/<pool>/train.npz --output checkpoints/<model>/rdm.npz
 
 # 2. Render with and without it, two seeds each, same settings
-python -B pipeline/render_boundary.py --model checkpoints/<model>/model.pt --output_dir renders/<name>_prior_s1 \
+python -B pipeline/render_learned_interior.py --model checkpoints/<model>/model.pt --output_dir renders/<name>_prior_s1 \
   --rdm_prior checkpoints/<model>/rdm.npz --prior_fraction 0.25 --width 160 --height 160 --spp 16 --seed 1
-python -B pipeline/render_boundary.py --model checkpoints/<model>/model.pt --output_dir renders/<name>_base_s1 \
+python -B pipeline/render_learned_interior.py --model checkpoints/<model>/model.pt --output_dir renders/<name>_base_s1 \
   --width 160 --height 160 --spp 16 --seed 1
 #    ... and again with --seed 2 for both
 
 # 3. Compare their image variance
-python -B analysis/compare_boundary_sampling.py --baseline renders/<name>_base_s1 renders/<name>_base_s2 \
+python -B analysis/compare_learned_interior_sampling.py --baseline renders/<name>_base_s1 renders/<name>_base_s2 \
   --prior renders/<name>_prior_s1 renders/<name>_prior_s2 --output <json>
 ```
 
 The prior must be built for the exact checkpoint it is used with; the renderer
 checks the model's hash. `render_paired.py` deliberately does not expose
 `--rdm_prior` (every paired result is RDM-free), so these renders use
-`render_boundary.py` directly. The four-seed variance measurement quoted in
+`render_learned_interior.py` directly. The four-seed variance measurement quoted in
 `docs/FINDINGS.md` came from `measure_prior_variance.py`, which is not in the
 repo (section 8).
 
@@ -392,6 +398,8 @@ python -B analysis/measure_fire.py --model checkpoints/pear_deep_mixed/model.pt 
 python -B figures/plot_results.py                  # ablation and accuracy figures (reads checkpoints/)
 python -B figures/visualize_geometry.py            # facet outlines of the cuts
 python -B figures/visualize_entry_sampling.py      # uniform vs camera entry sampling
+python -B figures/plot_convergence.py             # training convergence traces -> figures/plots/
+python -B figures/plot_aim_offset.py              # coverage blind spot vs aim offset -> figures/plots/
 python -B figures/denoise_chroma.py -h             # presentation denoising of chromatic speckle
 python -B pipeline/merge_renders.py -h             # merge seed renders (render_paired does this)
 python -B -m ground_truth.validate_meshes          # watertightness of all 9 meshes
@@ -417,3 +425,183 @@ Until they are recovered or rewritten, those numbers cannot be regenerated.
 worker count; `gather_sharded.py` reproduces regardless of worker count. Every
 render records its settings in `render.json` (and `paired.json`), so any result
 can be re-run from its own folder.
+
+---
+
+## 9. The paper's experiments (27-28 September 2026)
+
+The runs behind `docs/paper/main.tex`. Each render folder has its own
+`COMMANDS.md` with the full record (copying seeds, timings, results); the
+commands here are the ones to run from scratch. Every render is 512 x 512, front
+view, 4 seeds x 32 spp = 128 spp. Models made before 27 September are in
+`../checkpoint_history/`; change `checkpoints/` to that path to reuse them.
+
+| experiment | paper | folder |
+| --- | --- | --- |
+| three heads on three cuts | Table II, Figs. 1 and 3 | `renders/{gia,pear,step}_*` |
+| clone (baseline) on GIA | Table II | `renders/gia_clone/` |
+| true exit facet (oracle) | Fig. 4 | `renders/gia_clone_oracle_facet.png` |
+| transfer to an unseen stone | Sec. VI-E, Fig. 6 | `renders/gia_varied_from_pear*/` |
+| convergence traces | (README) | `figures/plots/convergence_*.png` |
+| coverage blind spot | Fig. 5 | `figures/plots/` (aim offset) |
+
+### Gather (one pool per cut, shared by every head on that cut)
+
+```bash
+python -B pipeline/gather_learned_interior.py --output checkpoints/camera_pool/train.npz \
+  --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 \
+  --entry_sampling camera --azimuth_range 0 360
+python -B pipeline/gather_learned_interior.py --output checkpoints/pear_pool/train.npz --diamond_name pear_brilliant \
+  --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 501 --workers 8 \
+  --entry_sampling camera --azimuth_range 0 360
+python -B pipeline/gather_learned_interior.py --output checkpoints/step_pool/train.npz --diamond_name step_cut \
+  --entries 65536 --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 \
+  --entry_sampling camera --azimuth_range 0 360
+```
+
+### Train the heads
+
+```bash
+# stochastic (mixture), 80 epochs
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
+python -B pipeline/train_learned_interior.py --data checkpoints/pear_pool/train.npz   --output checkpoints/pear_model   --epochs 80
+python -B pipeline/train_learned_interior.py --data checkpoints/step_pool/train.npz   --output checkpoints/step_model   --epochs 80
+
+# deep decoder (clone_deep), 30 epochs
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz --output checkpoints/gia_clone_deep  --head clone_deep --epochs 30
+python -B pipeline/train_learned_interior.py --data checkpoints/pear_pool/train.npz   --output checkpoints/pear_deep       --head clone_deep --epochs 30
+python -B pipeline/train_learned_interior.py --data checkpoints/step_pool/train.npz   --output checkpoints/step_clone_deep --head clone_deep --epochs 30
+
+# clone (baseline), GIA only, 80 epochs
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz --output checkpoints/clone_model --head clone --epochs 80
+```
+
+### Render, score and draw
+
+The stochastic run of each cut renders both modes; the other heads render the
+neural half only and are scored against that run's analytic seeds (the analytic
+mode does not depend on the network).
+
+```bash
+# stochastic: neural + analytic, merged and scored
+python -B pipeline/render_paired.py --model checkpoints/camera_model/model.pt --output_dir renders/gia_mixture \
+  --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+python -B pipeline/render_paired.py --model checkpoints/pear_model/model.pt --output_dir renders/pear_learned \
+  --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+python -B pipeline/render_paired.py --model checkpoints/step_model/model.pt --output_dir renders/step_learned \
+  --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+
+# other heads: neural only (shown for GIA deep decoder; same pattern for
+# clone_model -> gia_clone, pear_deep -> pear_clone_deep, step_clone_deep -> step_clone_deep)
+python -B pipeline/render_paired.py --model checkpoints/gia_clone_deep/model.pt --output_dir renders/gia_clone_deep \
+  --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4 --modes neural --skip_evaluation
+python -B analysis/evaluate_render.py --model checkpoints/gia_clone_deep/model.pt \
+  --analytic renders/gia_mixture/analytic/s101 renders/gia_mixture/analytic/s102 \
+             renders/gia_mixture/analytic/s103 renders/gia_mixture/analytic/s104 \
+  --neural renders/gia_clone_deep/neural/s101 renders/gia_clone_deep/neural/s102 \
+           renders/gia_clone_deep/neural/s103 renders/gia_clone_deep/neural/s104 \
+  --output renders/gia_clone_deep/evaluation.json
+
+# comparison figure for any run
+python -B analysis/compare_figure.py --model checkpoints/gia_clone_deep/model.pt \
+  --neural renders/gia_clone_deep/neural_az000.exr --analytic renders/gia_mixture/analytic_az000.exr \
+  --evaluation renders/gia_clone_deep/evaluation.json --output renders/gia_clone_deep_comparison.png \
+  --title "GIA round: deep decoder neural render against the analytic reference"
+```
+
+The side-by-side figures (`gia_three_heads.png`, `*_mixture_vs_clone_deep.png`)
+were drawn from the merged neural EXRs with `compare_figure.py`'s tone mapping;
+the drawing script was not committed.
+
+### True exit facet (oracle)
+
+The `--oracle_facet` render in section 2 ("Oracles"); the paper's Fig. 4 is
+`renders/gia_clone_oracle_facet.png`.
+
+### Transfer: pear operator on a varied GIA stone
+
+```bash
+# validate the varied stone and overlay it on the default GIA
+python -B -m ground_truth.validate_meshes --compare round_diamond_gia round_diamond_gia_varied \
+  --compare_png figures/plots/gia_vs_gia_varied_edges.png
+
+# retarget (pear 62 -> GIA 64 triangles, matched by facet normal)
+python -B pipeline/retarget_checkpoint.py --model checkpoints/pear_model/model.pt \
+  --diamond_name round_diamond_gia_varied --output checkpoints/gia_varied_from_pear/model.pt --allow_resize
+python -B pipeline/retarget_checkpoint.py --model checkpoints/pear_deep/model.pt \
+  --diamond_name round_diamond_gia_varied --output checkpoints/gia_varied_from_pear_clone_deep/model.pt --allow_resize
+
+# render: stochastic with both modes; deep decoder neural only, split into network / untouched light
+python -B pipeline/render_paired.py --model checkpoints/gia_varied_from_pear/model.pt \
+  --output_dir renders/gia_varied_from_pear --width 512 --height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+python -B pipeline/render_paired.py --model checkpoints/gia_varied_from_pear_clone_deep/model.pt \
+  --output_dir renders/gia_varied_from_pear_clone_deep --width 512 --height 512 --spp 32 \
+  --seeds 101 102 103 104 --workers 4 --modes neural --skip_evaluation --split_components
+# then score with evaluate_render.py against renders/gia_varied_from_pear/analytic/s101-s104, as above
+```
+
+The highlight-patch test (correlation without the 81 x 81 lamp reflection) was
+run inline and not committed; its numbers are in the two folders' `COMMANDS.md`.
+
+### Plots
+
+```bash
+python -B figures/plot_convergence.py               # convergence_{operators,streaming,dispersion}.png
+python -B figures/plot_aim_offset.py                # coverage blind spot vs aim offset (pear by default)
+```
+
+### The paper
+
+```bash
+cd docs/paper && pdflatex main.tex && pdflatex main.tex     # or upload docs/paper to Overleaf
+```
+
+---
+
+## 10. Recorded runs (one command per experiment)
+
+`pipeline/run_experiment.py` runs a whole experiment and records it in `figures/<name>/`:
+it trains (or takes an existing model), benchmarks the network, renders both modes with
+the interior split, evaluates, and draws. Training runs until the validation loss has
+converged (no improvement larger than `--tolerance`, default 0.001, for `--patience`,
+default 5, epochs in a row); `--epochs N` keeps the old fixed-length behaviour.
+
+```bash
+# train a new operator to convergence and record everything about it
+python -B pipeline/run_experiment.py --name gia_stochastic_converged --note "round cut, mixture head, trained to convergence"   --pool checkpoints/camera_pool/train.npz --head mixture --seed 23   --image_width 512 --image_height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+
+# evaluate an existing model the same way (no training)
+python -B pipeline/run_experiment.py --name gia_deep_decoder_recorded --model checkpoints/gia_clone_deep/model.pt   --image_width 512 --image_height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+
+# a second head, scored against the first run's analytic renders (no re-render) and compared with it
+python -B pipeline/run_experiment.py --name gia_deep_decoder_converged --pool checkpoints/camera_pool/train.npz \r
+  --head clone_deep --reference_run gia_stochastic_converged \r
+  --image_width 512 --image_height 512 --spp 32 --seeds 101 102 103 104 --workers 4
+
+# compare any two runs that share a reference, or redo one run's quality-against-time curve
+python -B analysis/compare_runs.py --runs gia_deep_decoder_converged gia_stochastic_converged
+python -B analysis/quality_vs_time.py --run gia_stochastic_converged
+
+# everything the paper reports, overnight and resumable (rerun the same command after a stop)
+python -B pipeline/run_paper_batch.py --dry_run     # print the plan first
+python -B pipeline/run_paper_batch.py
+
+# mean and spread across training seeds, with paired differences against partner runs
+python -B analysis/aggregate_runs.py --name gia_deep_seeds --runs gia_deep_s23 gia_deep_s24 gia_deep_s25 \r
+  --against gia_stochastic_s23 gia_stochastic_s24 gia_stochastic_s25
+
+# redraw the figures of a finished run
+python -B figures/plot_run.py --run figures/<name> --renders renders/<name>
+```
+
+Each run folder holds `README.md` (summary and the command to repeat it), `run.json`
+(command, commit, software, machine, stone, data, model, settings, stage times, file
+hashes), `training/` (per-epoch losses and times, curves), `render/` (per-render timing,
+network benchmark), `metrics/` (`evaluation.json`, `headline.csv`), `images/` and `logs/`.
+`--test_pool` adds held-out operator scores (facet accuracy, exit angles, branches) to
+`metrics/test_*.json` and the README. `render/quality_vs_time.*` gives each run's error against the converged reference as a
+function of render time, and the neural render's error floor. `--reference_run` reuses
+another run's analytic renders (settings must match), and every run named there or in
+`--compare_with` gets a paired bootstrap comparison in `comparisons/`.
+Every finished run adds one line to `figures/runs.csv`. Checkpoints go to
+`checkpoints/<name>/` and the EXR renders to `renders/<name>/`.
