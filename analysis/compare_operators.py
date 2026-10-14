@@ -1,4 +1,4 @@
-"""Compare exit-prediction quality across boundary operators, without rendering.
+"""Compare exit-prediction quality across learned interior operators, without rendering.
 
 Different coordinate heads optimise different losses -- a Gaussian mixture
 reports a negative log likelihood, a regression head reports a squared or
@@ -39,8 +39,8 @@ import config  # resolve runtime before importing Mitsuba
 import mitsuba as mi
 
 mi.set_variant('scalar_rgb')
-from neural.boundary_data import load_boundary
-from neural.boundary_model import load_model, encode_data
+from neural.learned_interior_data import load_learned_interior
+from neural.learned_interior_model import load_model, encode_data
 
 DRAWS = 16  # matches the recorded repeats per entry state
 
@@ -112,7 +112,7 @@ def main():
     if args.entries < 1:
         parser.error('--entries must be positive')
 
-    data, _ = load_boundary(args.data)
+    data, _ = load_learned_interior(args.data)
     with np.load(args.data, allow_pickle=False) as archive:
         vertices, faces = archive['vertices'].copy(), archive['faces'].copy()
     x, _, _, valid, escaped, _ = encode_data(data, vertices, faces)

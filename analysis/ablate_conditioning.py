@@ -1,4 +1,4 @@
-"""Which inputs does the boundary operator actually need?
+"""Which inputs does the learned interior operator actually need?
 
 The project's central design decision is that a radiance distribution map
 conditioned on angle alone cannot locate facet detail, and that entry position
@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from neural.boundary_data import load_encoded_pool as load_pool, split_entries
-from neural.boundary_model import BoundaryCloneModel
+from neural.learned_interior_data import load_encoded_pool as load_pool, split_entries
+from neural.learned_interior_model import LearnedInteriorCloneModel
 
 GROUPS = {'position': slice(0, 3), 'direction': slice(3, 6),
           'normal': slice(6, 9), 'wavelength': slice(9, 10)}
@@ -63,7 +63,7 @@ def mask_for(dropped, width=10):
 def train_arm(name, dropped, tensors, train_idx, val_idx, vertices, faces, args):
     torch.manual_seed(args.seed)
     keep = mask_for(dropped)
-    model = BoundaryCloneModel(vertices, faces, args.width, args.components)
+    model = LearnedInteriorCloneModel(vertices, faces, args.width, args.components)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     x, facet, y, escaped = tensors
     best, best_state = float('inf'), None

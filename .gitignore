@@ -10,3 +10,7 @@ ground_truth/*.ply
 figures/plots/
 # render and training logs
 *.log
+
+# test harness outputs and its local reference (machine-specific)
+tests/regression/output/
+tests/regression/reference/

@@ -11,7 +11,7 @@ the write-up and completion.
 
 ## 1. What this project is
 
-A learned **boundary transport operator** for faceted gemstones: a small neural
+A learned **interior transport operator** for faceted gemstones: a small neural
 network that replaces the entire journey of light inside a diamond with one
 query — given where light enters, in which direction and at what wavelength, it
 predicts whether and where it leaves, through which facet and in which
@@ -97,13 +97,13 @@ on its import path, so shared packages and the other folders resolve either way.
 
 | script | role |
 | --- | --- |
-| `pipeline/gather_boundary.py` | trace true interior transport; uniform (with aim offset) or camera-matched entry sampling; preallocated arrays, bit-identical to the original |
+| `pipeline/gather_learned_interior.py` | trace true interior transport; uniform (with aim offset) or camera-matched entry sampling; preallocated arrays, bit-identical to the original |
 | `pipeline/gather_sharded.py` | the same gather in resumable on-disk shards, for pools that don't fit in memory |
-| `neural/boundary_model.py` | the operator: mixture, clone and deep-clone heads; data encoding |
-| `neural/boundary_data.py` | loading and entry-grouped splitting |
-| `pipeline/train_boundary.py` | in-memory training |
+| `neural/learned_interior_model.py` | the operator: mixture, clone and deep-clone heads; data encoding |
+| `neural/learned_interior_data.py` | loading and entry-grouped splitting |
+| `pipeline/train_learned_interior.py` | in-memory training |
 | `pipeline/train_streaming.py` | streaming training over shards; mixes several pools; warm start; resumable |
-| `pipeline/render_boundary.py` | spectral renderer calling the operator for interior transport; supports tumbled poses and stratified wavelengths |
+| `pipeline/render_learned_interior.py` | spectral renderer calling the operator for interior transport; supports tumbled poses and stratified wavelengths |
 
 **Evaluation and experiments**
 
@@ -111,17 +111,17 @@ on its import path, so shared packages and the other folders resolve either way.
 | --- | --- |
 | `pipeline/render_paired.py` | neural and analytic renders over several seeds, merged and evaluated; supports rotated poses |
 | `pipeline/merge_renders.py`, `analysis/evaluate_render.py`, `analysis/compare_figure.py` | seed merging, masked comparison with measured noise floors, side-by-side figures |
-| `analysis/evaluate_boundary.py`, `analysis/compare_operators.py` | operator-level metrics on held-out transport |
-| `analysis/oracle_boundary.py` | nearest-neighbour oracle |
+| `analysis/evaluate_learned_interior.py`, `analysis/compare_operators.py` | operator-level metrics on held-out transport |
+| `analysis/oracle_learned_interior.py` | nearest-neighbour oracle |
 | `analysis/ablate_conditioning.py` | conditioning ablation |
 | `analysis/improve_decoder.py` | decoder sweep (resumable) |
 | `pipeline/retarget_checkpoint.py` | re-point a trained operator at another cut; `--allow_resize` for a different face count |
-| `pipeline/gather_dispersion.py`, `pipeline/train_dispersion.py`, `neural/dispersion_model.py` | paired-wavelength gather and the learned dispersion head (`render_boundary.py --dispersion`) |
+| `pipeline/gather_dispersion.py`, `pipeline/train_dispersion.py`, `neural/dispersion_model.py` | paired-wavelength gather and the learned dispersion head (`render_learned_interior.py --dispersion`) |
 | `analysis/measure_fire.py` | fire: colour that repeats between independent halves of a render |
-| `pipeline/animate_boundary.py` | orbit and tumble animations (resumable) |
+| `pipeline/animate_learned_interior.py` | orbit and tumble animations (resumable) |
 | `analysis/flash_sweep.py` | scintillation across azimuths |
 | `figures/plot_results.py`, `figures/visualize_geometry.py`, `figures/visualize_entry_sampling.py` | figures |
-| `analysis/make_boundary_subset.py`, `analysis/build_boundary_prior.py`, `figures/denoise_chroma.py` | data ladder subsets, the boundary RDM prior, presentation denoising |
+| `analysis/make_learned_interior_subset.py`, `analysis/build_learned_interior_prior.py`, `figures/denoise_chroma.py` | data ladder subsets, the learned interior RDM prior, presentation denoising |
 
 **Geometry** (`ground_truth/`): round, pear and step cut generators, dispatched
 by `cuts.py`; `validate_meshes.py` validates them all
@@ -213,7 +213,7 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 - Tag the commit that produced the thesis results (`git tag thesis-results`)
   before any refactor.
 - Pass `--stratify_wavelength` through `pipeline/render_paired.py` and
-  `pipeline/animate_boundary.py` (off by default) to reduce colour speckle for free.
+  `pipeline/animate_learned_interior.py` (off by default) to reduce colour speckle for free.
 - A from-scratch model on the mixed data, if the mixed-training numbers go in the
   thesis (the current one is fine-tuned).
 
@@ -226,7 +226,7 @@ LEAN-inspired sparkle), `bsdf/rdm_sampler.py`, `neural/base_model.py`,
 
 ## 7. Tests
 
-Fourteen tests pass: `python -B -m unittest discover -s tests -p 'test_boundary*.py'`.
+Fourteen tests pass: `python -B -m unittest discover -s tests -p 'test_learned_interior*.py'`.
 
 To add, ordered by the claim each protects:
 
@@ -256,10 +256,10 @@ To add, ordered by the claim each protects:
   by `figures/visualize_geometry.py`).
 - `stone_mask` now lives only in `analysis/evaluate_render.py`; `analysis/compare_figure.py` imports
   it. The figure rebuilt with identical numbers.
-- The three `load_pool` copies share `neural/boundary_data.load_encoded_pool`;
+- The three `load_pool` copies share `neural/learned_interior_data.load_encoded_pool`;
   their outputs are byte-identical to before.
 - `ground_truth/pear_validation.py` renamed `validate_meshes.py`; 9 of 9 meshes pass.
-- Unused constants removed from `analysis/oracle_boundary.py`, the unused task field and a
+- Unused constants removed from `analysis/oracle_learned_interior.py`, the unused task field and a
   stale docstring fixed in `pipeline/gather_sharded.py`; shards are identical to before.
 - `pipeline/render_paired.py` states that it is deliberately RDM-free.
 
@@ -267,7 +267,7 @@ To add, ordered by the claim each protects:
 
 - `ground_truth/diamond.py` is the legacy analytic renderer (lit identically to
   `legacy/eval.py` through `utils/studio_env.py`), not an unused prototype.
-- `analysis/compare_boundary_sampling.py` stays until `measure_prior_variance.py` exists
+- `analysis/compare_learned_interior_sampling.py` stays until `measure_prior_variance.py` exists
   to replace it.
 - The legacy RDM pipeline's entry points moved to `legacy/`, but its modules
   inside `bsdf/`, `neural/` and `utils/` stay in those shared packages, which
@@ -289,18 +289,18 @@ touches computation reproduce a stored result exactly.
 
 ```bash
 # data (camera-matched, round cut)
-python -B pipeline/gather_boundary.py --output checkpoints/camera_pool/train.npz --entries 65536 \
+python -B pipeline/gather_learned_interior.py --output checkpoints/camera_pool/train.npz --entries 65536 \
   --paths_per_entry 16 --max_depth 128 --seed 401 --workers 8 --entry_sampling camera --azimuth_range 0 360
 
 # operator
-python -B pipeline/train_boundary.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
+python -B pipeline/train_learned_interior.py --data checkpoints/camera_pool/train.npz --output checkpoints/camera_model --epochs 80
 
 # paired render and evaluation
 python -B pipeline/render_paired.py --model checkpoints/camera_model/model.pt --output_dir renders/<name> \
   --width 512 --height 512 --spp 32 --seeds 101 102 103 104 105 106 107 108 --workers 4 --split_components
 
 # model-level analyses
-python -B analysis/oracle_boundary.py --train checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json>
+python -B analysis/oracle_learned_interior.py --train checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json>
 python -B analysis/ablate_conditioning.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 60
 python -B analysis/improve_decoder.py --data checkpoints/camera_pool/train.npz --test checkpoints/camera_pool/test.npz --output <json> --epochs 30 --resume
 
@@ -309,8 +309,8 @@ python -B pipeline/gather_sharded.py --output_dir checkpoints/pear_pool_50m --re
 python -B pipeline/train_streaming.py --shards checkpoints/pear_pool_50m --output checkpoints/pear_deep_50m --epochs 2 --max_seconds 540
 
 # tumble (resumable)
-python -B pipeline/animate_boundary.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
-  --motion tumble --frames 60 --width 384 --height 384 --spp 32 --workers 4 --fps 30 [--resume]
+python -B pipeline/animate_learned_interior.py --model checkpoints/pear_deep_mixed/model.pt --output_dir renders/<name> \
+  --motion tumble_xyz --frames 60 --width 384 --height 384 --spp 32 --workers 4 --fps 30 [--resume]
 
 # figures
 python -B figures/plot_results.py
@@ -353,7 +353,7 @@ corrections record as an appendix. Say the speed result (1.46× slower) early an
 plainly.
 
 **Title.** Not "neural diamond rendering with radiance distribution maps": no
-evaluated render uses the RDM. Something like *"A position-conditioned boundary
+evaluated render uses the RDM. Something like *"A position-conditioned interior
 transport operator for faceted transparent solids"*.
 
 **Figures.** Existing: paired comparisons (round, pear, pose 9, 50M, deep clone),
@@ -378,7 +378,7 @@ results is real, which is a further reason an attempted fix is worth having.
   outside this project holds ~11 GB. Background runs have repeatedly been killed
   under memory pressure. Use 4 workers rather than 8, prefer the resumable tools
   (`pipeline/gather_sharded.py`, `pipeline/train_streaming.py`, `improve_decoder.py --resume`,
-  `animate_boundary.py --resume`), and run long jobs in bounded steps
+  `animate_learned_interior.py --resume`), and run long jobs in bounded steps
   (`--max_seconds`).
 - Each render process holds Mitsuba and PyTorch at ~250 MB.
 - `legacy/eval.py` is the legacy path and needs `--diamond_name` explicitly; it cannot

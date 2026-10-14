@@ -10,7 +10,7 @@ misses. That distinction matters: a blurred version of the right image and a
 sharp version of the wrong one both score badly on RMSE but look entirely
 different here.
 
-Exposure matches render_boundary.py's display convention, and is identical
+Exposure matches render_learned_interior.py's display convention, and is identical
 across panels so brightness is comparable by eye.
 """
 import sys
@@ -32,7 +32,7 @@ import mitsuba as mi
 mi.set_variant('scalar_spectral')
 # One stone mask for every figure and evaluation, so pixels always agree.
 from analysis.evaluate_render import stone_mask
-from neural.boundary_model import load_model
+from neural.learned_interior_model import load_model
 from utils.studio_env import display_exposure
 
 LUMINANCE = np.array([.2126, .7152, .0722])
@@ -51,8 +51,9 @@ def main():
     parser.add_argument('--analytic', type=Path, required=True, help='Merged analytic EXR')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--azimuth', type=float, default=0.)
+    parser.add_argument('--camera', choices=('studio', 'spin'), default='studio')
     parser.add_argument('--rotation_deg', type=float, nargs=3, metavar=('X', 'Y', 'Z'),
-                        help='Stone rotation of a tumbled pose, as given to render_boundary')
+                        help='Stone rotation of a tumbled pose, as given to render_learned_interior')
     parser.add_argument('--evaluation', type=Path,
                         help='evaluation.json to annotate the figure with')
     parser.add_argument('--title', default='')
@@ -65,7 +66,7 @@ def main():
     height, width = neural.shape[:2]
 
     _, checkpoint = load_model(args.model)
-    mask = stone_mask(checkpoint, width, height, args.azimuth, args.rotation_deg)
+    mask = stone_mask(checkpoint, width, height, args.azimuth, args.rotation_deg, args.camera)
     exposure = display_exposure()
 
     yn, ya = neural @ LUMINANCE, analytic @ LUMINANCE
@@ -90,9 +91,12 @@ def main():
     lines = []
     if args.evaluation and args.evaluation.exists():
         report = json.loads(args.evaluation.read_text())
+        # the same correlation the run's README and tables report (half-split, against the noise floor);
+        # older evaluations without a headline fall back to the full-image value they were captioned with
+        headline = (report.get('headline') or {}).get('whole_stone')
+        correlation = headline['pixel_correlation'] if headline else report['full_comparison']['correlation']
         lines.append('correlation %.4f   |   %d effective spp   |   %d stone pixels'
-                     % (report['full_comparison']['correlation'], report['effective_spp'],
-                        report['mask_pixels']))
+                     % (correlation, report['effective_spp'], report['mask_pixels']))
     if args.title:
         figure.suptitle(args.title, fontsize=13)
     if lines:
