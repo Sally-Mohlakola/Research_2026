@@ -34,16 +34,16 @@ appearance. A radiance distribution map (RDM) adapted from the cloth method is
 first shown to condition on the wrong variable, and is generalised to a
 \emph{learned interior operator}: a network that takes where, in which direction
 and at what wavelength light enters the stone, and predicts whether, through
-which facet and in which direction it leaves. Evaluated on three diamond cuts
-against an exact spectral path tracer, the operator predicts exit facets better
-than every lookup baseline, yet a more accurate operator produces images that
-agree with the reference \emph{less} (pixel correlation 0.038--0.168 against
-0.136--0.293). A recorded, convergence-trained run on an independent test pool
-locates the failure: exit facets are predicted correctly for 61\% of short
-paths but at most 7\% of paths meeting four or more facets, and for 6\% of
-exits through the pavilion. Each learned decision is 3.5 times faster than
-tracing, but the neural image settles at an error a single analytic render
-already beats.
+which facet and in which direction it leaves. Three decoders were trained to
+convergence on three diamond cuts with five seeds each (45 runs) and compared
+with an exact spectral path tracer. The deterministic decoders predict exit
+facets more accurately than the stochastic one on every cut, yet their images
+agree with the reference \emph{less} (pixel correlation 0.050--0.184 against
+0.122--0.272), in 29 of 30 paired seeds. Held-out paths locate the failure:
+exit facets are predicted correctly for 45--59\% of paths meeting two or three
+facets but 2--3\% of those meeting sixteen or more. Each learned decision is
+three times faster than tracing, yet renders are 31\% slower and the neural
+image settles at an error a single analytic render already beats.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -298,15 +298,16 @@ internal bounce.
 Parameter & Value \\
 \midrule
 Cuts (triangles / facets) & round 64/57, pear 62/33, step 112/50 \\
-Training pool per cut & 1,048,576 paths from 65,536 entry states, split 80/20 by entry state \\
-Held-out test pool (E3) & 262,144 paths from 16,384 entry states, separate seed \\
+Training pool per cut & 1,048,576 paths from 65,536 entry states: half camera-matched, half uniform with the aim offset; split 80/20 by entry state \\
+Held-out test pool per cut & 262,144 paths from 16,384 entry states, same mix, separate seeds \\
 Interior depth cap & 128 \\
 Training & Adam, learning rate $10^{-3}$, batch 256, clip 10 \\
-Stopping & E1: 80 (stochastic) / 30 (deep) epochs; E3: improvement $\le10^{-3}$ for 5 epochs \\
-Renders & $512\times512$, box filter, $4\times32\spp$ per mode \\
+Stopping & best validation loss improving by $\le10^{-3}$ for 5 epochs (stopped after 31--93) \\
+Training seeds & 23, 24, 25, 26, 27 \\
+Renders & $512\times512$, box filter, $8\times32\spp$ per mode (halves of $128\spp$) \\
 Operator batch & 512 entry states \\
-Hardware (E3) & 16-thread AMD CPU, 15 GB, Windows 11 \\
-Software (E3) & Mitsuba 3.9.1, PyTorch 2.10, Python 3.13 \\
+Hardware & 14-core Linux nodes of a Slurm cluster \\
+Software & Mitsuba 3.9.1, Dr.Jit 1.5.0, PyTorch 2.13, Python 3.10 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -314,35 +315,38 @@ Software (E3) & Mitsuba 3.9.1, PyTorch 2.10, Python 3.13 \\
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{gia_three_heads.png}
-\caption{Round-cut renders from E1: stochastic, clone, deep clone and analytic
-reference at 128 spp. Deterministic placement restores sharp features but not
-their locations. Embedded scores use all seeds; Table~\ref{tab:images} uses
-64-spp halves.}
+\caption{Round-cut renders from E1 (seed 23): stochastic, clone and deep decoder
+beside the analytic reference ($256\spp$). Deterministic placement restores sharp
+features but not their locations. Panel scores are that run's pixel
+correlation; Table~\ref{tab:images} gives five-seed means.}
 \label{fig:round}
 \end{figure*}
 
 \begin{table*}[t]
-\caption{Image evaluation of E1. Four 32-spp seeds per mode; pixel correlation,
-relative RMSE, highlight overlap and energy use 64-spp halves, contrast and
-facet correlation the full average. ``Reference halves'' is the noise floor.}
+\caption{Image agreement in E1: mean $\pm$ standard deviation over five training
+seeds. Each render is $8\times32\spp$; pixel, disattenuated and interior-only
+correlations compare $128\spp$ halves, facet correlation and noise-free contrast
+use the full average. Floors: the analytic reference against its own other half.}
 \label{tab:images}
 \centering\small
 \begin{tabular}{@{}llrrrrrr@{}}
 \toprule
-Cut & Decoder & Pixel corr. $\uparrow$ & Rel. RMSE $\downarrow$ & Top-1\% overlap $\uparrow$ & Energy error & Contrast & Facet corr. $\uparrow$ \\
+Cut & Decoder & Pixel corr. $\uparrow$ & Disattenuated $\uparrow$ & Interior only $\uparrow$ & Facet corr. $\uparrow$ & Energy error & Contrast \\
 \midrule
-Round & Stochastic & 0.152 & 3.750 & 0.197 & $-0.8\%$ & 0.93 & 0.399 \\
- & Clone & 0.048 & 4.741 & 0.071 & $+26.4\%$ & 2.35 & 0.288 \\
- & Deep clone & 0.038 & 4.849 & 0.117 & $+13.8\%$ & 2.74 & 0.038 \\
- & Reference halves & 0.957 & 1.140 & 0.777 & $+0.6\%$ & 3.78 & 0.9996 \\
+Round & Stochastic & \textbf{0.122} $\pm$ 0.015 & \textbf{0.154} $\pm$ 0.024 & \textbf{0.057} $\pm$ 0.014 & \textbf{0.260} $\pm$ 0.064 & $+8\%$ $\pm$ 2 & 0.85 $\pm$ 0.09 \\
+ & Clone & 0.050 $\pm$ 0.025 & 0.053 $\pm$ 0.027 & 0.021 $\pm$ 0.017 & 0.250 $\pm$ 0.122 & $+21\%$ $\pm$ 18 & 2.22 $\pm$ 0.54 \\
+ & Deep decoder & 0.060 $\pm$ 0.037 & 0.063 $\pm$ 0.038 & 0.032 $\pm$ 0.037 & 0.120 $\pm$ 0.076 & $+13\%$ $\pm$ 12 & 2.69 $\pm$ 0.71 \\
+ & \emph{floor / reference} & \emph{0.974} & & & \emph{0.9999} & & \emph{3.72} \\
 \midrule
-Pear & Stochastic & 0.136 & 1.834 & 0.007 & $+17.3\%$ & 0.89 & 0.645 \\
- & Deep clone & 0.054 & 3.795 & 0.002 & $+47.8\%$ & 2.31 & 0.414 \\
- & Reference halves & 0.899 & 0.684 & 0.595 & $+0.4\%$ & 1.48 & 0.9996 \\
+Pear & Stochastic & \textbf{0.172} $\pm$ 0.014 & \textbf{0.281} $\pm$ 0.020 & \textbf{0.103} $\pm$ 0.016 & \textbf{0.690} $\pm$ 0.072 & $+19\%$ $\pm$ 2 & 0.48 $\pm$ 0.02 \\
+ & Clone & 0.074 $\pm$ 0.038 & 0.081 $\pm$ 0.042 & 0.034 $\pm$ 0.042 & 0.476 $\pm$ 0.214 & $+46\%$ $\pm$ 17 & 1.74 $\pm$ 0.26 \\
+ & Deep decoder & 0.092 $\pm$ 0.019 & 0.103 $\pm$ 0.022 & 0.050 $\pm$ 0.018 & 0.451 $\pm$ 0.138 & $+40\%$ $\pm$ 5 & 1.46 $\pm$ 0.22 \\
+ & \emph{floor / reference} & \emph{0.941} & & & \emph{0.9999} & & \emph{1.44} \\
 \midrule
-Step & Stochastic & 0.293 & 2.353 & 0.059 & $+14.2\%$ & 0.84 & 0.880 \\
- & Deep clone & 0.168 & 2.956 & 0.057 & $+15.3\%$ & 1.77 & 0.899 \\
- & Reference halves & 0.942 & 0.817 & 0.650 & $-0.3\%$ & 2.37 & 0.9997 \\
+Step & Stochastic & \textbf{0.272} $\pm$ 0.018 & \textbf{0.356} $\pm$ 0.021 & \textbf{0.197} $\pm$ 0.020 & \textbf{0.857} $\pm$ 0.023 & $+16\%$ $\pm$ 3 & 0.59 $\pm$ 0.02 \\
+ & Clone & 0.112 $\pm$ 0.036 & 0.121 $\pm$ 0.040 & 0.058 $\pm$ 0.027 & 0.713 $\pm$ 0.087 & $+29\%$ $\pm$ 9 & 1.53 $\pm$ 0.36 \\
+ & Deep decoder & 0.184 $\pm$ 0.026 & 0.203 $\pm$ 0.031 & 0.124 $\pm$ 0.026 & 0.852 $\pm$ 0.031 & $+15\%$ $\pm$ 4 & 1.09 $\pm$ 0.14 \\
+ & \emph{floor / reference} & \emph{0.975} & & & \emph{0.9999} & & \emph{2.35} \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -350,28 +354,28 @@ Step & Stochastic & 0.293 & 2.353 & 0.059 & $+14.2\%$ & 0.84 & 0.880 \\
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{operator_breakdown.pdf}
-\caption{Recorded run, 261,632 escaped held-out paths. (a) Exit-facet top-1
-accuracy by the number of facets a path meets inside the stone; the second tick
-line is each group's share of paths. (b) Exit-direction error when the true
-facet is supplied: median and 90th percentile. (c) Share of exits through each
-region that the operator also sends there; bar: whole region, dot: one triangle
-(8 table, 24 crown, 24 of 32 pavilion triangles with at least 20 test exits).}
+\caption{E3, round cut, stochastic decoder, seed 23: 261,335 escaped held-out
+paths. (a) Exit-facet top-1 accuracy by the number of facets a path meets inside
+the stone; the second tick line is each group's share of paths. (b) Exit-direction
+error when the true facet is supplied: median and 90th percentile. (c) Share of
+exits through each region that the operator also sends there; bar: whole region,
+dot: one triangle with at least 20 test exits.}
 \label{fig:breakdown}
 \end{figure*}
 
 \subsection{Experimental design}
-Five experiments test the hypotheses.
+Six experiments test the hypotheses.
 \begin{itemize}
-\item \textbf{E1 Decoder comparison} (H1): stochastic, clone and deep-clone
-operators trained on the same paths for each of three cuts, rendered against
-the reference.
-\item \textbf{E2 Diagnostics} (H1): lookup baselines, a nearest-neighbour oracle
-over the training paths, an input ablation, and an \emph{oracle-facet} render in
-which the exact tracer supplies the true exit facet.
-\item \textbf{E3 Recorded run} (H1, H2): one configuration (round cut,
-stochastic decoder, seed 23) re-run from gathered data to figures with every
-input recorded, trained to convergence and tested on an independent pool,
-broken down by path length and exit region.
+\item \textbf{E1 Decoder comparison} (H1): the stochastic, clone and deep
+decoders on each of the three cuts, each trained with five seeds (45 runs), all
+trained to convergence on the same pool per cut, tested on an independent pool
+and rendered against one analytic reference per cut.
+\item \textbf{E2 Diagnostics} (H1): \emph{true-facet} renders, in which the
+exact tracer supplies each path's exit facet to the seed-23 models; and,
+from earlier single-seed experiments on a camera-matched pool, lookup baselines,
+a nearest-neighbour oracle and an input ablation.
+\item \textbf{E3 Breakdown} (H2): E1's held-out paths grouped by the number of
+facets met inside the stone and by exit region.
 \item \textbf{E4 Cost} (H3): render and per-decision timing at equal time and
 equal quality, and the network's cost against batch size.
 \item \textbf{E5 Entry sampling}: camera-matched against uniform aim-offset
@@ -379,7 +383,6 @@ training entries, on a 60-frame pear tumble.
 \item \textbf{E6 Transfer}: an operator trained on one cut, re-pointed at
 another without retraining: round (GIA) to pear, and pear to step cut.
 \end{itemize}
-
 
 \subsection{Baselines}
 \begin{itemize}
@@ -391,7 +394,9 @@ entry states, a non-parametric test of whether the exit is predictable at all.
 \end{itemize}
 
 \begin{table}[t]
-\caption{Round-cut exit-triangle prediction on held-out paths}
+\caption{Round-cut exit-triangle prediction on held-out paths. Upper rows:
+earlier single-seed diagnostics on a camera-matched pool; lower rows: E1, mean
+$\pm$ standard deviation over five seeds on the mixed test pool.}
 \label{tab:baselines}
 \centering\small
 \begin{tabular}{@{}lr@{}}
@@ -402,9 +407,10 @@ Most common triangle & 0.047 \\
 Entry-direction table (32 / 2,048 cells) & 0.068 / 0.098 \\
 Entry-triangle table & 0.192 \\
 Nearest neighbour / majority of eight & 0.287 / 0.343 \\
-Stochastic operator & 0.380 \\
-Clone operator & 0.410 \\
-Stochastic, recorded run, independent test pool & 0.374 \\
+\midrule
+Stochastic decoder & 0.358 $\pm$ 0.005 \\
+Clone & 0.386 $\pm$ 0.005 \\
+Deep decoder & 0.386 $\pm$ 0.003 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -413,45 +419,47 @@ Stochastic, recorded run, independent test pool & 0.374 \\
 \centering
 \includegraphics[width=\columnwidth]{pear_heads.png}\\[2pt]
 \includegraphics[width=\columnwidth]{step_heads.png}
-\caption{Pear (top) and step cut (bottom) from E1: stochastic and deep-clone
-operators beside their references (128 spp). Broad shape and brightness survive
-on both cuts; the sharp internal reflections do not.}
+\caption{Pear (top) and step cut (bottom) from E1 (seed 23): stochastic and
+deep-decoder operators beside their references ($256\spp$). Broad shape and
+brightness survive on both cuts; the sharp internal reflections do not.}
 \label{fig:cuts}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.92\columnwidth]{oracle_facet.png}
-\caption{Clone, clone supplied with the traced exit facet, and reference (256
-spp). The correct facet restores contrast but not placement.}
+\caption{E2, round cut, seed 23: the clone, the clone supplied with the traced
+exit facet, and the reference ($256\spp$). The correct facet restores the star
+pattern and contrast but not placement.}
 \label{fig:oracle}
 \end{figure}
 
 \begin{table}[t]
-\caption{Recorded run: agreement with the reference (round, stochastic,
-$4\times32\spp$). Brackets: 95\% interval; floor: the reference against its own
-other half.}
-\label{tab:recorded}
+\caption{E2: supplying the true exit facet to the seed-23 models. Pixel
+correlation and noise-free contrast, without and with the true facet. Step cut
+pending.}
+\label{tab:truefacet}
 \centering\small
-\setlength{\tabcolsep}{2.5pt}
-\begin{tabular}{@{}lrr@{}}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}llrrrr@{}}
 \toprule
-Measure & Whole stone & Interior only \\
+& & \multicolumn{2}{c}{Pixel corr.} & \multicolumn{2}{c}{Contrast (ref.)} \\
+\cmidrule(lr){3-4}\cmidrule(l){5-6}
+Cut & Decoder & learned & true facet & learned & true facet \\
 \midrule
-Pixel correlation & 0.141 [0.090, 0.235] & 0.077 [0.063, 0.107] \\
-\quad noise floor & 0.957 & 0.959 \\
-Disattenuated correlation & 0.213 & 0.156 \\
-Rank / log correlation & 0.32 / 0.33 & 0.21 / 0.23 \\
-Facet correlation & 0.352 [0.03, 0.90] & 0.246 [0.03, 0.76] \\
-Energy error & $-1.7\%$ & $-1.9\%$ \\
-Noise-free contrast (ref.) & 0.77 (3.74) & 0.59 (4.32) \\
+Round & Stochastic & 0.127 & 0.151 & 0.79 & 0.98 (3.72) \\
+ & Clone & 0.077 & 0.048 & 1.73 & 2.73 (3.72) \\
+ & Deep & 0.057 & 0.077 & 1.53 & 2.50 (3.72) \\
+\midrule
+Pear & Stochastic & 0.188 & 0.310 & 0.50 & 0.84 (1.44) \\
+ & Clone & 0.121 & 0.127 & 1.94 & 4.90 (1.44) \\
+ & Deep & 0.107 & 0.107 & 1.41 & 3.38 (1.44) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-
 \subsection{Evaluation metrics}
 Metrics use the pixels whose camera ray hits the stone, on linear luminance.
-Four seeds per mode are split into two independent halves; the reference
+Eight seeds per mode are split into two independent halves; the reference
 compared with its own other half gives the \emph{noise floor}, the agreement
 sampling noise alone allows.
 \begin{itemize}
@@ -469,20 +477,23 @@ through the operator (or, for the reference, the traced interior).
 \item \textbf{Operator metrics} on held-out paths: exit-facet top-1 accuracy,
 and the exit-direction angle when the true facet is supplied.
 \end{itemize}
-Ninety-five percent intervals come from bootstrapping $16\times16$-pixel blocks
-or facets.
+Decoders are compared seed by seed: each deterministic run is paired with the
+stochastic run of the same seed, and a difference counts as clear when its
+95\% block-bootstrap interval excludes zero.
 
 \subsection{Data collection}
-Each recorded run writes, under one folder: the exact command and git commit,
+Each of the 45 runs writes, under one folder: the exact command and git commit,
 the software and hardware, hashes of the mesh, training data and checkpoint,
 per-epoch training and validation losses, per-seed render timing, every
-evaluation result as JSON and CSV, and the figures. The historical E1 runs
-predate this pipeline and record only their checkpoints and evaluations.
+evaluation result as JSON and CSV, and its figures. A final step aggregates the
+five seeds of every cut and decoder and computes the paired differences. The
+runs were executed as Slurm array jobs; every job skips finished work, so
+interrupted jobs resume without repeating it.
 
 \section{Results and Analysis}
 \begin{table}[t]
-\caption{Recorded cost, round cut, $512\times512$, 32 spp per render, mean of
-four seeds (renders run four at a time). Error is relative RMSE against the
+\caption{E4 cost, round cut, stochastic decoder, seed 23: $512\times512$,
+32 spp per render, mean of eight seeds. Error is relative RMSE against the
 converged analytic image.}
 \label{tab:cost}
 \centering\small
@@ -491,14 +502,13 @@ converged analytic image.}
 \toprule
 & Analytic & Neural \\
 \midrule
-Render time (s) & \textbf{538} & 737 \\
-Time per interior decision ($\mu$s) & 63 & \textbf{18} \\
-Interior share of render time & 49\% & 10\% \\
-Error after four renders & \textbf{0.56} & 3.69 \\
-Error at equal time (2,950 s) & \textbf{0.48} & 3.69 \\
-Lowest reachable error & $\to 0$ & 3.65 \\
-Time to reach the other's best & \textbf{51 s} & never \\
-Training time & -- & 777 s \\
+Render time (s) & \textbf{264} & 345 \\
+Time per interior decision ($\mu$s) & 31 & \textbf{10.5} \\
+Interior share of render time & 50\% & 13\% \\
+Error at equal time (2,760 s) & \textbf{0.36} & 3.72 \\
+Lowest reachable error & $\to 0$ & 3.69 \\
+Time to reach the other's best & \textbf{26 s} & never \\
+Training time & -- & 485 s \\
 Model size & 1 KB mesh & 70 KB \\
 \bottomrule
 \end{tabular}
@@ -507,125 +517,109 @@ Model size & 1 KB mesh & 70 KB \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.84\columnwidth]{timing.pdf}
-\caption{Where the time goes (recorded run). (a) Render time split into
-interior decisions (dark) and everything else (light), with the seed range.
-(b) Cost of one interior decision against batch size: a standalone benchmark
-(curve, 10th--90th percentile band), the recorded run's benchmark (squares,
-different machine load), the analytic trace in the renderer (dashed) and the
-network in the renderer at its mean batch (diamond).}
+\caption{E4, where the time goes. (a) Render time split into interior decisions
+and everything else, with the seed range. (b) Cost of one interior decision
+against batch size: the network alone (curve), the analytic trace in the
+renderer (dashed) and the network in the renderer at its mean batch (diamond).}
 \label{fig:timing}
 \end{figure}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.92\columnwidth]{sampling_contrast.pdf}
-\caption{Entry sampling on the pear. Top: where training entries land under
+\caption{E5, entry sampling on the pear. Top: where training entries land under
 (a) uniform directions with the aim offset and (b) camera rays from a full
-orbit. Bottom: a pavilion-facing tumble pose (frame 53 of 60) rendered by
-operators trained on (b) alone and on (a) and (b) together.}
+orbit. Bottom: a pavilion-facing tumble pose (frame 53 of 60, $256\spp$)
+rendered by operators trained on (b) alone and on (a) and (b) together.}
 \label{fig:sampling}
 \end{figure}
 
-\subsection{The operator learns (E2)}
+\subsection{The operator learns (E1, E2)}
 
-\paragraph{Learning beats every lookup} The operators exceed every baseline
-(Table~\ref{tab:baselines}); the clone is 43\% above the nearest-neighbour
-oracle over a million training paths, so the network is not merely
-interpolating stored paths.
+\paragraph{Learning beats every lookup} All three decoders predict the round
+cut's exit triangle better than every lookup baseline and the nearest-neighbour
+oracle (Table~\ref{tab:baselines}), with a spread of at most 0.005 between seeds.
+Training converged after 31--93 epochs, so the networks are not under-trained.
 
-\paragraph{Position carries the information} With the architecture fixed,
-removing position from the input drops top-1 accuracy from 0.404 to 0.273, and
-an operator given only entry direction, the RDM's conditioning, falls to 0.117.
-Removing wavelength changes it by 0.0003.
+\paragraph{Position carries the information} In the earlier ablation, removing
+position from the input dropped top-1 accuracy from 0.404 to 0.273, and an
+operator given only entry direction, the RDM's conditioning, fell to 0.117.
+Removing wavelength changed it by 0.0003.
 
 \subsection{Sharper is not more faithful (E1, H1)}
 
+\paragraph{A more accurate operator agrees less} On every cut the clone and deep
+decoders predict exit facets more accurately than the stochastic decoder on the
+held-out pool (round 0.386 against 0.358, pear 0.31 against 0.27, step 0.29
+against 0.24), and their images look more like a diamond
+(Figs.~\ref{fig:round} and~\ref{fig:cuts}). Yet their pixel correlation is lower on every cut
+(Table~\ref{tab:images}). Paired by seed, the deterministic decoder is below
+the stochastic one in 29 of 30 pairs, and clearly so in 26. This supports H1.
 
-\paragraph{A more accurate operator agrees less} The deep clone predicts exit
-facets more accurately than the stochastic decoder on every cut (validation
-top-1 0.392 against 0.371 round, 0.338 against 0.311 pear, 0.328 against 0.305
-step), and its images look more like a diamond, with contrast up to the
-reference's. Yet its pixel correlation is lower on every cut: 0.038 against
-0.152, 0.054 against 0.136, and 0.168 against 0.293
-(Figs.~\ref{fig:round} and~\ref{fig:cuts}, Table~\ref{tab:images}). The pattern
-holds on all three cuts, so it is not a property of one geometry. This supports
-H1.
+\paragraph{The gap is not noise} Removing sampling noise (disattenuated
+correlation) leaves the ordering unchanged, and every score stays far below the
+noise floors of 0.94--0.98. Light that actually passes through the network
+agrees least: interior-only correlations are about half the whole-stone values.
 
 \paragraph{The stochastic image is right on average, wrong in detail} The
-stochastic round image preserves total energy within 1\% but has a quarter of
-the reference's contrast (0.93 against 3.78): its exits spread so widely that
-each pixel averages bright and dark parts of the lighting, like frosted glass.
+stochastic decoder keeps the best agreement but a quarter to a third of the
+reference's contrast (0.85 against 3.72 on the round cut): its exits spread so
+widely that each pixel averages bright and dark parts of the lighting.
 
 \paragraph{Coarse structure can survive} Averaged over facets, the step cut's
-deep clone reaches 0.899, close to the reference's 0.9997, while its pixel
-correlation is 0.168: which facets are bright can be right while the sparkle
+deep decoder matches the stochastic one (0.852 against 0.857) while its pixel
+correlation is lower: which facets are bright can be right while the sparkle
 within them is wrong.
 
 \subsection{Choosing the facet is not enough (E2)}
 
-\paragraph{The right facet restores the look, not the image} Supplying the
-clone with the true exit facet restores contrast (3.73 against 3.74) and the
-star pattern (Fig.~\ref{fig:oracle}), but correlation falls to 0.041. Within
-the correct facet the clone's exit is still about $24.7\dg$ from the truth, so
-sharp highlights land in the wrong places.
+\paragraph{The right facet restores the look} Supplying the true exit facet
+raises the deterministic decoders' contrast towards or beyond the reference's
+(Table~\ref{tab:truefacet}, Fig.~\ref{fig:oracle}): on the pear the clone
+reaches 4.90 against 1.44.
 
-\paragraph{Blur and accuracy are separate axes} Decoding the stochastic model at
-its component means cuts the spread of its exits from $26.0\dg$ to $8.1\dg$, yet
-correlation falls from 0.174 to 0.153. A blurred image keeps partial overlap
-with the reference; a sharp but misplaced one loses it.
+\paragraph{The right facet does not fix agreement} Their pixel correlation
+stays between 0.05 and 0.13, and the round clone's even falls (0.077 to 0.048),
+because the exit is still misplaced within the facet. Only the stochastic decoder gains clearly (pear 0.188 to 0.310), as its
+broad placement keeps overlap once the facet is right. Facet choice and
+within-facet placement are therefore separate failures.
 
 \subsection{Where the operator fails (E3, H2)}
 
+\paragraph{Accuracy collapses on long paths} On all three cuts, paths meeting
+two or three facets are predicted correctly 45--59\% of the time and leave
+within a median $9.5\dg$--$11\dg$ of the traced direction, but paths meeting
+sixteen or more are predicted correctly 2--3\% of the time and miss by
+$44\dg$--$48\dg$ (Fig.~\ref{fig:breakdown}a,b). This part of H2 holds on every
+cut and every seed.
 
-\paragraph{The earlier result reproduces} Trained to convergence (stopping at
-epoch 62, best 57) and tested on an independent pool, the operator reaches
-top-1 accuracy 0.374, matching its validation score of 0.375, and pixel
-correlation 0.141, matching the earlier 0.152 within its interval
-(Table~\ref{tab:recorded}). Under-training does not explain the result.
-
-\paragraph{The disagreement is structure, not noise} Removing sampling noise
-(disattenuated 0.213) or the influence of a few bright pixels (rank 0.32, log
-0.33) raises the score but leaves it far below the 0.957 floor.
-
-\paragraph{Light through the network agrees least} The interior-only
-correlation, 0.077, is half the whole-stone value: untouched surface
-reflections lift the whole-stone score.
-
-\paragraph{Accuracy collapses on long paths} Paths meeting two or three facets
-(58\% of paths) are predicted correctly 61\% of the time and leave within a
-median $8\dg$ of the traced direction (Fig.~\ref{fig:breakdown}a,b). For paths
-meeting four or more facets (42\%), accuracy falls to 2--7\% and the median
-error grows to $28\dg$--$46\dg$.
-
-\paragraph{The pavilion fails despite ample data} Exits through the table are
-predicted correctly 58\% of the time and through the crown 38\%, but through the
-pavilion only 6\%, although the pavilion carries a quarter of all exiting light
-(Fig.~\ref{fig:breakdown}c). Its large triangles each have about
-$1.6\times10^4$ training exits yet score 2--13\%, so the failure follows route
-length, not data. This supports H2.
+\paragraph{The pavilion is not the problem once it is covered} H2 also
+predicted failure at pavilion exits. Trained on the mixed pool, pavilion exits
+are predicted as well as crown exits (seed 23: 29\%, 27\% and 28\% against 32\%,
+32\% and 16\% on the round, pear and step cuts; Fig.~\ref{fig:breakdown}c). An
+earlier camera-only model predicted only 6\% of pavilion exits correctly, so that
+failure was a coverage effect (E5), not a property of the pavilion. H2 is
+supported for route length but not for exit region.
 
 \subsection{Faster per decision, slower per image (E4, H3)}
 \label{sec:cost}
 
-
 \paragraph{Each decision is faster} One learned interior decision costs
-18\,$\mu$s against 63\,$\mu$s to trace it, 3.5 times faster, and the interior's
-share of the render drops from 49\% to 10\% (Table~\ref{tab:cost},
+10.5\,$\mu$s against 31\,$\mu$s to trace it, three times faster, and the
+interior's share of the render drops from 50\% to 13\% (Table~\ref{tab:cost},
 Fig.~\ref{fig:timing}a).
 
-\paragraph{The whole render is slower} A neural render takes 37\% longer: the
-time outside the interior grows from 272\,s to 661\,s, spent gathering entry
+\paragraph{The whole render is slower} A neural render takes 31\% longer: the
+time outside the interior grows from 132\,s to 301\,s, spent gathering entry
 states, preparing inputs and decoding exits. Batch size limits the saving
-(Fig.~\ref{fig:timing}b): one query alone costs about 0.7\,ms, the network only
-overtakes tracing beyond about ten queries per batch, and although the renderer
-asks for 512, its batches average 80 as paths finish.
+(Fig.~\ref{fig:timing}b): one query alone costs about 0.4\,ms, the network only
+overtakes tracing beyond about 17 queries per batch, and although the renderer
+asks for 512, its batches average 83 as paths finish.
 
-\paragraph{No budget reaches analytic quality} Error is measured against the
-converged analytic image. The neural error is a fixed bias plus noise and
-levels off at 3.65, whereas a single analytic render already reaches 1.12 and
-the error model, extrapolating below one render, places the analytic image at
-the neural floor after about 51\,s. At equal time the analytic error is 7.7
-times lower. This supports H3.
+\paragraph{No budget reaches analytic quality} The neural error is a fixed bias
+plus noise and levels off at 3.69, whereas the analytic image reaches that error
+after about 26\,s. At equal time the analytic error is 10 times lower on the
+round cut and 7--10 times lower across the cuts. This supports H3.
 
 \subsection{Entry sampling decides coverage (E5)}
 \label{sec:sampling}
@@ -638,49 +632,41 @@ operator lets only 46\% of queries escape when the pavilion faces the camera,
 and the pavilion renders nearly black.
 
 \paragraph{Coverage repairs escape, not placement} Adding uniform aim-offset
-entries restores escape to 100\% at every pose and lights the pavilion, but
-correlation at that pose stays at 0.018 against a floor of 0.951. The recorded
-run, trained on camera entries only, is therefore a front-view result.
+entries restores escape to 100\% and lights the pavilion. In earlier tests the
+correlation at that pose stayed at 0.018 against a floor of 0.951. This is why
+every E1 pool mixes the two strategies.
 
 \subsection{Transfer across cuts (E6)}
 \label{sec:transfer}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{transfer.pdf}
-\caption{Transfer across cuts (E6). Each row shows an operator trained on one
-cut and re-pointed at another without retraining, beside the stochastic operator
-trained on the target cut and the analytic reference (128 spp).
-\emph{Transferred renders pending.}}
+\caption{E6: an operator trained on one cut and re-pointed at another without
+retraining, beside the stochastic operator trained on the target cut and the
+analytic reference ($256\spp$).}
 \label{fig:transfer}
 \end{figure}
 
 \paragraph{What transfer requires} The operator's facet head is a categorical
-over the triangles of the mesh it was trained on, so it cannot be applied to a
-new cut directly. Each target triangle is instead given the identity of the
-source triangle whose outward normal points most nearly the same way, and the
-head's weights and facet embeddings are permuted to match; nothing is
-retrained. This imposes three restrictions. First, the face counts differ:
-round to pear (64 to 62 triangles) drops two source classes, and pear to step
-cut (62 to 112) matches 62 triangles one to one and lets the other 50 share the
-probability of their best-aligned source triangle. Second, matching by normal
-ignores position, so facets that face the same way on different parts of the
-stone, such as a step cut's parallel steps, receive the same identity. Third,
-the encoder and decoder learned the internal routes of the source stone and are
-given no description of the new geometry, so transfer tests whether those
-learned routes carry over at all.
+over the triangles of its training mesh, so each target triangle is given the
+identity of the source triangle whose outward normal points most nearly the same
+way, and the head's weights and facet embeddings are permuted to match; nothing
+is retrained. Round to pear (64 to 62 triangles) drops two source classes; pear
+to step cut (62 to 112) lets 50 surplus triangles share the probability of their
+best-aligned source triangle. Matching by normal ignores position, and the
+network keeps the internal routes of the source stone.
 
-\paragraph{Earlier evidence} A pear operator re-pointed at a round variant
-(62 to 64 triangles) matched normals to within a median of $8.2\dg$, but a mean
-of $30.9\dg$ and a worst case of $138.9\dg$. Its whole-stone correlation of 0.37
-came almost entirely from an untouched surface highlight: removing that patch
-dropped correlation to $-0.001$, and the operator component scored 0.004.
-Transfer is therefore judged on interior-only scores.
+\paragraph{Round to pear partly transfers} The seed-23 round operator on the pear
+(normals matched within a median $7.8\dg$, mean $30.9\dg$) keeps much of the
+coarse facet brightness (facet correlation 0.553 against 0.690 for the pear's own
+operator), but its pixel correlation falls from 0.172 to 0.070, its
+interior-only correlation to $-0.005$, and it adds 44\% too much energy.
 
-\paragraph{Round to pear, pear to step cut} Both transfers use the same render
-settings as the native operators of Fig.~\ref{fig:cuts}
-(Fig.~\ref{fig:transfer}). \emph{[Pending: interior-only and whole-stone
-correlation, energy error and mean normal alignment for each transfer, against
-the native operator's scores of 0.136 (pear) and 0.293 (step).]}
+\paragraph{Pear to step cut does not} Across families the transfer fails
+outright: pixel correlation $-0.018$, interior-only $-0.040$ and facet
+correlation 0.001, against 0.272, 0.197 and 0.857 for the step cut's own
+operator. Learned routes do not carry over to a different cut family.
+\emph{[Deep-decoder transfers pending.]}
 
 \section{Discussion}
 \subsection{Why accuracy does not reach the image}
@@ -694,48 +680,48 @@ bright lamp matters greatly, a large one between dark directions hardly at all.
 Facet accuracy and mean angular error are therefore incomplete proxies for the
 image. A broad exit distribution spreads energy over correct and incorrect
 regions and keeps some overlap; a sharp but misplaced one loses it, which is why
-every step towards sharpness in E1 and E2 moved correlation down. This
-explanation is consistent with the results but untested; a radiance-weighted
-objective would test it.
+the sharper decoders score lower in E1 and gain least from the true facet in E2.
+This explanation is consistent with the results but untested; a
+radiance-weighted objective would test it.
 
-The breakdown in E3 adds that accuracy follows route length, not data. A long
-route changes facet whenever the path crosses any internal facet edge, so its
-exit varies rapidly with the entry state, and a small smooth network blends
-across such changes~\cite{rahaman2019}. Local encodings~\cite{muller2022ngp}
-are a natural next test.
+E3 adds that accuracy follows route length on every cut once coverage is fixed.
+A long route changes facet whenever the path crosses any internal facet edge, so
+its exit varies rapidly with the entry state, and a small smooth network blends
+across such changes~\cite{rahaman2019}. Local encodings~\cite{muller2022ngp} are
+a natural next test.
 
 \subsection{Limitations}
-The study uses one lighting rig, mostly one view, simplified meshes and a facet
-head tied to its mesh. The full recorded pipeline has run for one
-configuration; the E1 results use single training seeds and fixed epoch
-budgets, and multi-seed runs for all cuts and decoders, the RDM ladder and the
-transfer renders are pending. Renders ran four at a time, so absolute times include contention, and
-ground caustics are not evaluated.
+The study uses one lighting rig, one view for the main comparison, simplified
+meshes and a facet head tied to its mesh. Five training seeds bound the
+seed-to-seed spread but leave the intervals wide. The lookup baselines,
+nearest-neighbour oracle and ablation come from earlier single-seed runs on a
+camera-matched pool. The step-cut true-facet renders, the deep-decoder transfers
+and the RDM ladder are pending, and ground caustics are not evaluated.
 
 \section{Conclusion}
 This study adapted a neural appearance model from cloth to faceted gemstones
 and generalised its direction-conditioned radiance map into a position-aware
-learned interior operator.
+learned interior operator, evaluated in 45 converged runs.
 
-The operator learns: it predicts exit facets better than every lookup baseline,
-including a nearest-neighbour oracle over a million paths, and generalises to an
-independent test pool (top-1 0.374).
+The operator learns: all three decoders predict exit facets better than every
+lookup baseline, with a seed spread of at most 0.007.
 
-Accuracy does not transfer to the image (H1). On every cut the more accurate
-deep decoder renders a sharper diamond that agrees with the reference less
-(pixel correlation 0.038--0.168 against 0.136--0.293), and even the true exit
-facet leaves correlation at 0.041.
+Accuracy does not transfer to the image (H1). The more accurate deterministic
+decoders render sharper diamonds that agree with the reference less on every cut
+(0.050--0.184 against 0.122--0.272), in 29 of 30 paired seeds, and the true exit
+facet restores their contrast but not their agreement.
 
-The failure is localised (H2). Exit facets are right for 61\% of short paths
-but at most 7\% of paths meeting four or more facets, and for 6\% of pavilion
-exits despite ample training data.
+The failure follows route length (H2, in part). Paths meeting two or three
+facets are predicted correctly about half the time, those meeting sixteen or
+more almost never; pavilion exits fail only when the pavilion is missing from
+training.
 
-The operator does not save time (H3). Each decision is 3.5 times faster, yet
-renders are 37\% slower and the image settles at an error a single analytic
-render beats.
+The operator does not save time (H3). Each decision is three times faster, yet
+renders are 31\% slower and the image settles at an error the analytic renderer
+reaches in under half a minute.
 
 Future work should test radiance-weighted training and local encodings on the
-long-route cases, and repeat the recorded runs across seeds, cuts and lighting.
+long-route cases, and repeat the study under other lighting.
 
 \begin{thebibliography}{99}
 \bibitem{soh2024} G. Y. Soh and Z. Montazeri, ``Neural appearance model for cloth
