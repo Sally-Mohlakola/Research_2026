@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neural Diamond Rendering</title>
+<meta name="description" content="Can a small neural network replace the light transport inside a diamond? Honours research by Gopolang Mohlakola, University of the Witwatersrand.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ink: #0a0c11;
+  --ink-2: #11141b;
+  --ink-3: #191d27;
+  --line: #2a303d;
+  --text: #e9ecf2;
+  --muted: #a3abba;
+  --faint: #7d8597;
+  --stoch: #6ea8ff;
+  --deep: #ff6f9c;
+  --clone: #f2b45a;
+  --oracle: #7fe0c2;
+  --spectrum: linear-gradient(90deg, #ff4d4d, #ffb347, #fff275, #6cf08a, #4fc3ff, #7b6cff, #d16bff);
+  --serif: 'Instrument Serif', 'Times New Roman', serif;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--ink); color: var(--text); font-family: var(--sans); font-size: 18px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+img { max-width: 100%; display: block; }
+a { color: var(--stoch); }
+a:hover { color: #a9cbff; }
+:focus-visible { outline: 2px solid var(--oracle); outline-offset: 3px; }
+
+.spectrum-rule { height: 2px; background: var(--spectrum); opacity: .85; }
+.wrap { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+h1, h2, h3 { font-family: var(--serif); font-weight: 400; letter-spacing: -.01em; margin: 0; }
+h2 { font-size: clamp(40px, 6vw, 76px); line-height: 1.02; }
+h3 { font-size: 30px; line-height: 1.1; }
+p { margin: 0; }
+.lede { font-size: 22px; line-height: 1.55; color: #d4d9e3; max-width: 760px; }
+.muted { color: var(--muted); }
+
+/* Navigation */
+.nav { position: sticky; top: 0; z-index: 20; background: rgba(10,12,17,.86); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.nav .wrap { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 56px; flex-wrap: wrap; }
+.nav-title { font-family: var(--serif); font-size: 22px; color: var(--text); text-decoration: none; }
+.nav-links { display: flex; gap: 6px; flex-wrap: wrap; }
+.nav-links a { font-family: var(--mono); font-size: 13px; color: var(--muted); text-decoration: none; padding: 8px 10px; border-radius: 6px; }
+.nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--ink-3); }
+
+/* Hero */
+.hero { position: relative; min-height: 92vh; display: grid; align-items: center; overflow: hidden; }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 48px; align-items: center; padding: 72px 0; }
+.hero h1 { font-size: clamp(52px, 8.4vw, 118px); line-height: .94; }
+.hero h1 em { font-style: italic; background: var(--spectrum); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero-copy { display: flex; flex-direction: column; gap: 26px; }
+.byline { display: flex; gap: 22px; flex-wrap: wrap; font-family: var(--mono); font-size: 14px; color: var(--muted); }
+.byline strong { color: var(--text); font-weight: 500; }
+.hero-gem { position: relative; aspect-ratio: 1; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 40px 120px rgba(110,168,255,.12); }
+.hero-gem img { width: 100%; height: 100%; object-fit: cover; transform: scale(1.18); }
+.hero-gem figcaption { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #233; }
+.scroll-cue { font-family: var(--mono); font-size: 13px; color: var(--faint); display: inline-flex; gap: 10px; align-items: center; text-decoration: none; }
+.scroll-cue svg { animation: bob 2.4s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(5px); } }
+
+/* Chapters */
+.chapter { padding: 120px 0 40px; scroll-margin-top: 56px; }
+.chapter-head { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 28px; margin-bottom: 44px; }
+.chapter-no { font-family: var(--serif); font-size: 96px; line-height: .8; color: transparent; -webkit-text-stroke: 1px #4a5366; }
+.chapter-head .stack { display: flex; flex-direction: column; gap: 18px; }
+
+/* Cards and figures */
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.card { background: var(--ink-2); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+.card .body { padding: 20px 22px 24px; display: flex; flex-direction: column; gap: 10px; }
+.card .tag { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+.card img { aspect-ratio: 1; object-fit: cover; background: #000; }
+.verdict { font-family: var(--mono); font-size: 13px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; margin-top: auto; }
+figure { margin: 0; }
+figcaption.cap { font-size: 15px; color: var(--muted); margin-top: 12px; }
+
+/* Flow diagram */
+.flow { display: grid; grid-template-columns: repeat(7, auto); align-items: stretch; gap: 10px; }
+.flow .step { background: var(--ink-2); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px; }
+.flow .step.net { background: #18213a; border-color: #3a4f86; }
+.flow .step b { font-weight: 600; }
+.flow .step span { font-size: 15px; color: var(--muted); }
+.flow .arrow { display: flex; align-items: center; color: var(--faint); }
+.heads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-top: 26px; }
+.head { border-radius: 14px; padding: 22px; background: var(--ink-2); border: 1px solid var(--line); border-top-width: 4px; }
+.head.stoch { border-top-color: var(--stoch); }
+.head.deep { border-top-color: var(--deep); }
+.head.clone { border-top-color: var(--clone); }
+.heads.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* Segmented choices, video gallery, graphs */
+.seg { display: flex; gap: 8px; flex-wrap: wrap; }
+.seg button { font: 500 15px var(--sans); color: var(--text); background: var(--ink-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; min-height: 44px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink-3); border-color: #8c97ad; }
+.check { display: flex; gap: 10px; align-items: center; font-size: 16px; min-height: 44px; cursor: pointer; }
+.check input { width: 20px; height: 20px; accent-color: var(--oracle); }
+.vids { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 22px; }
+.vids figure { background: var(--ink-2); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.vids video { width: 100%; aspect-ratio: 1; display: block; background: #000; }
+.vids figcaption { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; padding: 10px 12px; }
+.graph { background: #ffffff; border-radius: 14px; padding: 14px; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 26px; }
+.facts div { border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; background: var(--ink-2); }
+.facts .bignum { font-size: 48px; }
+
+/* Interactive viewer */
+.viewer { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 36px; align-items: start; }
+.compare { position: relative; aspect-ratio: 1; border-radius: 16px; overflow: hidden; border: 1px solid var(--line); background: #000; --cut: 50%; user-select: none; }
+.compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.compare .top { clip-path: inset(0 calc(100% - var(--cut)) 0 0); }
+.compare .divider { position: absolute; top: 0; bottom: 0; left: var(--cut); width: 2px; background: #fff; box-shadow: 0 0 18px rgba(255,255,255,.6); pointer-events: none; }
+.compare .label { position: absolute; top: 14px; font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; padding: 6px 10px; border-radius: 6px; background: rgba(10,12,17,.75); }
+.compare .label.l { left: 14px; }
+.compare .label.r { right: 14px; }
+.slider { width: 100%; margin-top: 16px; accent-color: #ffffff; }
+.controls { display: flex; flex-direction: column; gap: 22px; }
+.toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.toggle button { font: 500 16px var(--sans); color: var(--text); background: var(--ink-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 14px; text-align: left; cursor: pointer; min-height: 48px; display: flex; gap: 10px; align-items: center; }
+.toggle button .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.toggle button[aria-pressed="true"] { background: var(--ink-3); border-color: #8c97ad; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.stat { background: var(--ink-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.stat .k { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font-family: var(--serif); font-size: 40px; line-height: 1.05; margin-top: 4px; }
+.stat .r { font-size: 13px; color: var(--faint); }
+.note { font-size: 16px; color: #cfd5df; min-height: 76px; }
+table { border-collapse: collapse; width: 100%; font-size: 16px; }
+th, td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+
+/* Tumble */
+.tumble img { aspect-ratio: 1; object-fit: cover; background: #000; }
+.bignum { font-family: var(--serif); font-size: 64px; line-height: 1; }
+.plot { background: #ffffff; border-radius: 14px; padding: 10px; }
+
+/* Ruled out */
+.ruled { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 36px; }
+.ruled div { border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; background: var(--ink-2); }
+.ruled .x { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--deep); }
+
+/* Quote and footer */
+.pull { font-family: var(--serif); font-size: clamp(34px, 4.6vw, 58px); line-height: 1.1; max-width: 1000px; }
+.pull em { color: var(--deep); font-style: italic; }
+.conclusions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-top: 46px; }
+.conclusions div { border-top: 2px solid var(--line); padding-top: 16px; }
+footer { border-top: 1px solid var(--line); margin-top: 120px; padding: 48px 0 64px; color: var(--muted); font-size: 15px; }
+.refs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 40px; margin-top: 18px; }
+
+/* Reveal */
+.reveal { opacity: 0; transform: translateY(26px); transition: opacity .9s ease, transform .9s ease; }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .scroll-cue svg { animation: none; }
+}
+
+/* Narrow screens */
+@media (max-width: 900px) {
+  .hero-grid, .viewer, .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .grid-3, .ruled, .conclusions, .refs { grid-template-columns: minmax(0, 1fr); }
+  .heads, .heads.three, .facts { grid-template-columns: minmax(0, 1fr); }
+  .vids { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chapter-head { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .chapter-no { font-size: 64px; }
+  .flow { grid-template-columns: minmax(0, 1fr); }
+  .flow .arrow { justify-content: center; transform: rotate(90deg); }
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .hero { min-height: auto; }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Chapters">
+<div class="wrap">
+<a class="nav-title" href="#top">Neural Diamond Rendering</a>
+<div class="nav-links">
+<a href="#question">01 Question</a>
+<a href="#journey">02 Journey</a>
+<a href="#operator">03 Operator</a>
+<a href="#result">04 Result</a>
+<a href="#fails">05 Where it fails</a>
+<a href="#blindspot">06 Blind spot</a>
+<a href="#cost">07 Cost</a>
+</div>
+</div>
+</nav>
+<div class="spectrum-rule" aria-hidden="true"></div>
+
+<header class="hero" id="top">
+<div class="wrap hero-grid">
+<div class="hero-copy reveal">
+<div class="eyebrow">Honours research · 2026</div>
+<h1>Can a network learn <em>sparkle</em>?</h1>
+<p class="lede">A diamond's beauty lives in sharp shards of light that flash and vanish as it turns. I asked whether a small neural network can replace the light transport inside a diamond. Across 45 trained networks and three cuts, making the network more accurate made the diamond look more real, yet match the real one less.</p>
+<div class="byline"><span><strong>Gopolang Mohlakola</strong></span><span>Supervisors: Dr Branden Ingram, Dr Pravesh Ranchod</span><span>University of the Witwatersrand</span></div>
+<a class="scroll-cue" href="#question">Scroll to begin
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v15"></path><path d="M6 13l6 6 6-6"></path></svg>
+</a>
+</div>
+<figure class="hero-gem reveal">
+<video src="media/anim/gia_analytic.mp4" autoplay muted loop playsinline aria-label="A round brilliant diamond rotating, rendered by exact spectral path tracing" style="width: 100%; height: 100%; object-fit: cover; transform: scale(1.18); display: block"></video>
+<figcaption>Exact path tracing · the target</figcaption>
+</figure>
+</div>
+</header>
+
+<section class="chapter" id="question">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">01</div>
+<div class="stack">
+<div class="eyebrow">The question</div>
+<h2>Cloth forgives averages. Diamonds don't.</h2>
+<p class="lede">Neural appearance models built for cloth learn how light leaves a material for each incoming <em>direction</em>. Cloth fibres are far smaller than a pixel, so that is enough. A diamond is the opposite: its large facets <strong>are</strong> the appearance, and <em>where</em> light enters decides where it leaves.</p>
+<p class="lede"><strong>Can a small neural network replace the light transport inside a diamond, and if not, which of its errors explain why the image differs?</strong></p>
+</div>
+</div>
+<div class="ruled reveal">
+<div><div class="x" style="color: var(--stoch)">H1 · Accuracy is not appearance</div><p class="muted" style="margin-top: 6px">The decoder that predicts exits most accurately does not give the image that agrees best with the reference.</p></div>
+<div><div class="x" style="color: var(--clone)">H2 · Where errors arise</div><p class="muted" style="margin-top: 6px">Errors grow as light meets more facets inside the diamond, and are worst at the pavilion.</p></div>
+<div><div class="x" style="color: var(--deep)">H3 · Cost</div><p class="muted" style="margin-top: 6px">A network query is faster than tracing, yet a full neural render is neither faster nor as accurate.</p></div>
+</div>
+</div>
+</section>
+
+<section class="chapter" id="journey">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">02</div>
+<div class="stack">
+<div class="eyebrow">The journey</div>
+<h2>Three attempts at the same diamond</h2>
+<p class="lede">Each step fixed what the last one could not, and each failure pointed at the next idea.</p>
+</div>
+</div>
+<div class="grid-3">
+<article class="card reveal">
+<img src="media/rdm_roll.gif" alt="Rolling diamond rendered with the radiance distribution map: flat, blocky shading">
+<div class="body">
+<div class="tag" style="color: var(--clone)">Step 1 · Radiance map</div>
+<h3>The average</h3>
+<p class="muted">A histogram of how light leaves for each incoming direction, after Soh &amp; Montazeri's cloth model. It records only direction: grouping paths by direction predicts the exit triangle 6.8% of the time, by entry triangle 19.2%.</p>
+<div class="verdict">Result: flat, blocky shading</div>
+</div>
+</article>
+<article class="card reveal">
+<img src="media/sparkle_roll.gif" alt="Rolling diamond with the LEAN-inspired spread: scattered speckles rather than facet flashes">
+<div class="body">
+<div class="tag" style="color: var(--deep)">Step 2 · LEAN-inspired spread</div>
+<h3>The variance</h3>
+<p class="muted">Like LEAN mapping, store each bin's spread as well as its mean, and light each point with probability 1/(1+r²). The right <em>amount</em> of sparkle returns, but the bins don't know where on the diamond it belongs.</p>
+<div class="verdict">Result: speckle, not sparkle</div>
+</div>
+</article>
+<article class="card reveal">
+<img src="media/still/gia_stochastic.png" alt="Diamond rendered with the neural transport operator: correct outline, soft interior">
+<div class="body">
+<div class="tag" style="color: var(--stoch)">Step 3 · Neural transport operator</div>
+<h3>The position</h3>
+<p class="muted">A network that knows <em>where</em> light enters the diamond and predicts whether it escapes, through which facet, and in which direction.</p>
+<div class="verdict">Result: right outline and energy, soft sparkle</div>
+</div>
+</article>
+</div>
+</div>
+</section>
+
+<section class="chapter" id="operator">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">03</div>
+<div class="stack">
+<div class="eyebrow">How it works</div>
+<h2>One network call replaces the inside of the diamond</h2>
+<p class="lede">The surface is traced exactly. Everything that happens inside is replaced by one prediction, trained on about a million paths per cut from an exact spectral path tracer, to convergence, with five training seeds each: 45 runs in total.</p>
+</div>
+</div>
+<div class="flow reveal" role="list">
+<div class="step" role="listitem"><b>Light enters</b><span>traced exactly to the surface</span></div>
+<div class="arrow" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h15"></path><path d="M13 6l6 6-6 6"></path></svg></div>
+<div class="step net" role="listitem"><b>Neural network</b><span>entry position, direction, normal, wavelength</span></div>
+<div class="arrow" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h15"></path><path d="M13 6l6 6-6 6"></path></svg></div>
+<div class="step" role="listitem"><b>Exit</b><span>escape? → which facet → point and direction</span></div>
+<div class="arrow" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h15"></path><path d="M13 6l6 6-6 6"></path></svg></div>
+<div class="step" role="listitem"><b>Light continues</b><span>through the scene, as normal</span></div>
+</div>
+<div class="heads three">
+<div class="head stoch reveal"><h3 style="color: var(--stoch)">Stochastic</h3><p class="muted" style="margin-top: 8px">Learns a <em>spread</em> of possible exits, a four-Gaussian mixture, and samples one each time. When unsure, it hedges.</p></div>
+<div class="head clone reveal"><h3 style="color: var(--clone)">Clone</h3><p class="muted" style="margin-top: 8px">The standard baseline: predicts <em>one</em> exit by behavioural cloning. When unsure, it commits.</p></div>
+<div class="head deep reveal"><h3 style="color: var(--deep)">Deep decoder</h3><p class="muted" style="margin-top: 8px">A deeper clone with its own encoder. More capacity, still one committed exit.</p></div>
+</div>
+</div>
+</section>
+
+<section class="chapter" id="result">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">04</div>
+<div class="stack">
+<div class="eyebrow">The key result</div>
+<h2>Sharper is not more faithful</h2>
+<p class="lede">Same diamond, same training data. Only the way the exit is placed changes. Drag to wipe between a neural render and the exact reference, switch cut and operator, or hand the network the true exit facet.</p>
+</div>
+</div>
+<div class="viewer reveal">
+<figure>
+<div class="compare" id="compare">
+<img id="refImg" src="media/still/gia_reference.png" alt="Exact reference render of the round cut">
+<img class="top" id="neuralImg" src="media/still/gia_stochastic.png" alt="Neural render of the round cut">
+<div class="divider" aria-hidden="true"></div>
+<span class="label l" id="leftLabel">Neural: stochastic</span>
+<span class="label r">Exact reference</span>
+</div>
+<label class="eyebrow" for="wipe" style="display: block; margin-top: 18px">Wipe between neural render and reference</label>
+<input class="slider" id="wipe" type="range" min="0" max="100" value="50">
+<figcaption class="cap">Front view, 512 × 512, 256 samples per pixel, training seed 23. Scores below are for this render.</figcaption>
+</figure>
+<div class="controls">
+<div class="seg" role="group" aria-label="Choose the cut">
+<button type="button" data-cut="gia" aria-pressed="true">Round</button>
+<button type="button" data-cut="pear" aria-pressed="false">Pear</button>
+<button type="button" data-cut="step" aria-pressed="false">Step cut</button>
+</div>
+<div class="toggle" role="group" aria-label="Choose the neural operator">
+<button type="button" data-head="stochastic" aria-pressed="true"><span class="dot" style="background: var(--stoch)"></span>Stochastic</button>
+<button type="button" data-head="clone" aria-pressed="false"><span class="dot" style="background: var(--clone)"></span>Clone</button>
+<button type="button" data-head="deep" aria-pressed="false"><span class="dot" style="background: var(--deep)"></span>Deep decoder</button>
+</div>
+<label class="check"><input type="checkbox" id="truefacet">Give the network the true exit facet</label>
+<div class="stats" aria-live="polite">
+<div class="stat"><div class="k">Correlation</div><div class="v" id="sCorr">0.127</div><div class="r" id="sFloor">noise floor 0.974</div></div>
+<div class="stat"><div class="k">Contrast</div><div class="v" id="sCon">0.79</div><div class="r" id="sConRef">reference 3.72</div></div>
+<div class="stat"><div class="k">Energy</div><div class="v" id="sEn">+10%</div><div class="r">vs reference</div></div>
+</div>
+<p class="note" id="sNote"></p>
+<table>
+<thead><tr><th>5-seed mean</th><th style="color: var(--stoch)">Stochastic</th><th style="color: var(--clone)">Clone</th><th style="color: var(--deep)">Deep</th></tr></thead>
+<tbody>
+<tr><td>Round</td><td>0.122</td><td>0.050</td><td>0.060</td></tr>
+<tr><td>Pear</td><td>0.172</td><td>0.074</td><td>0.092</td></tr>
+<tr><td>Step cut</td><td>0.272</td><td>0.112</td><td>0.184</td></tr>
+<tr><td class="muted">Exit accuracy, round</td><td class="muted">0.358</td><td>0.386</td><td>0.386</td></tr>
+</tbody>
+</table>
+<p class="muted" style="font-size: 15px">Pixel correlation with the reference. The deterministic decoders pick exits more accurately, yet agree less on every cut, in 29 of 30 paired training seeds.</p>
+</div>
+</div>
+
+<div class="chapter-head reveal" style="margin-top: 90px; margin-bottom: 0">
+<div aria-hidden="true"></div>
+<div class="stack">
+<div class="eyebrow">Watch them turn</div>
+<h3>60 frames, 256 samples per pixel, the same rotation for every operator</h3>
+<div class="seg" role="group" aria-label="Choose the cut for the animations">
+<button type="button" data-anim="gia" aria-pressed="true">Round</button>
+<button type="button" data-anim="pear" aria-pressed="false">Pear</button>
+<button type="button" data-anim="step" aria-pressed="false">Step cut</button>
+</div>
+</div>
+</div>
+<div class="vids reveal">
+<figure><video id="vAnalytic" src="media/anim/gia_analytic.mp4" autoplay muted loop playsinline aria-label="Analytic reference rotating"></video><figcaption>Exact reference</figcaption></figure>
+<figure><video id="vStochastic" src="media/anim/gia_stochastic.mp4" autoplay muted loop playsinline aria-label="Stochastic operator rotating"></video><figcaption style="color: var(--stoch)">Stochastic</figcaption></figure>
+<figure><video id="vClone" src="media/anim/gia_clone.mp4" autoplay muted loop playsinline aria-label="Clone operator rotating"></video><figcaption style="color: var(--clone)">Clone</figcaption></figure>
+<figure><video id="vDeep" src="media/anim/gia_deep.mp4" autoplay muted loop playsinline aria-label="Deep decoder rotating"></video><figcaption style="color: var(--deep)">Deep decoder</figcaption></figure>
+</div>
+</div>
+</section>
+
+<section class="chapter" id="fails">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">05</div>
+<div class="stack">
+<div class="eyebrow">Where it fails</div>
+<h2>Short paths survive. Long paths don't.</h2>
+<p class="lede">Light inside a diamond jumps: crossing one internal facet edge sends it out of a different facet entirely. The longer the path, the more edges it crosses, and a small smooth network can only blend between answers.</p>
+</div>
+</div>
+<figure class="reveal"><div class="graph"><img src="media/graphs/operator_breakdown.png" alt="Exit-facet accuracy by number of facets met, exit-direction error with the true facet given, and accuracy by exit region"></div><figcaption class="cap">Round cut, stochastic decoder, 261,335 held-out paths. (a) Accuracy by facets met inside the diamond. (b) Exit-direction error when the true facet is supplied. (c) Accuracy by exit region.</figcaption></figure>
+<div class="facts">
+<div class="reveal"><div class="bignum">45–59%</div><p class="muted">correct on paths meeting two or three facets, about 10° off</p></div>
+<div class="reveal"><div class="bignum">2–3%</div><p class="muted">correct on paths meeting sixteen or more, about 45° off</p></div>
+<div class="reveal"><div class="bignum">≈ crown</div><p class="muted">pavilion exits do as well as the crown once the pavilion is in the training data</p></div>
+</div>
+<p class="pull reveal" style="margin-top: 70px">Hand the network the <em>true exit facet</em> and the diamond's contrast snaps back, yet it still matches the real one no better. Try it in the viewer above.</p>
+</div>
+</section>
+
+<section class="chapter" id="blindspot">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">06</div>
+<div class="stack">
+<div class="eyebrow">A bug worth finding</div>
+<h2>The underside went dark</h2>
+<p class="lede">Training rays fired only from the camera never enter through the pavilion: 0% of them. So when the diamond tumbled and showed its underside, the network had never seen that light, and lost half of it. Adding rays from every direction, shifted across the diamond with an aim offset, fixed it.</p>
+</div>
+</div>
+<div class="grid-2 tumble">
+<figure class="card reveal">
+<img src="media/tumble_camera_only.gif" alt="Pear diamond tumbling, trained on camera rays only: the underside turns dark">
+<div class="body"><div class="tag" style="color: var(--deep)">Before · camera rays only</div><div class="bignum">46%</div><p class="muted">of light escapes when the pavilion faces the camera</p></div>
+</figure>
+<figure class="card reveal">
+<img src="media/tumble_mixed.gif" alt="Pear diamond tumbling, trained with rays from every direction: the underside stays lit">
+<div class="body"><div class="tag" style="color: var(--oracle)">After · camera plus aim-offset rays</div><div class="bignum">100%</div><p class="muted">escape at every angle</p></div>
+</figure>
+</div>
+<div class="grid-2" style="margin-top: 22px">
+<figure class="reveal"><div class="plot"><img src="media/graphs/sampling_contrast.png" alt="Where training entries land under uniform aim-offset and camera sampling, and a pavilion-facing pose rendered by each operator"></div><figcaption class="cap">Top: where training entries land. Bottom: a pavilion-facing pose at 256 samples per pixel, trained on camera rays alone, and on both.</figcaption></figure>
+<figure class="reveal"><div class="plot"><img src="media/tumble_escape.png" alt="Escape rate against pavilion share for every tumble frame, before and after the fix"></div><figcaption class="cap">Every frame of the 60-frame tumble: escape against how much pavilion faces the camera.</figcaption></figure>
+</div>
+</div>
+</section>
+
+<section class="chapter" id="cost">
+<div class="wrap">
+<div class="chapter-head reveal">
+<div class="chapter-no" aria-hidden="true">07</div>
+<div class="stack">
+<div class="eyebrow">Cost and transfer</div>
+<h2>Faster per decision, slower per image</h2>
+<p class="lede">One learned decision takes 10.5 µs against 31 µs to trace it. Yet a full neural render takes 345 s against 264 s, because gathering, preparing and decoding the network's batches costs more than the tracing it replaces. At equal render time, the analytic image is 7–10 times more accurate.</p>
+</div>
+</div>
+<div class="grid-2">
+<figure class="reveal"><div class="graph"><img src="media/graphs/timing.png" alt="Render time split into interior decisions and everything else, and the cost of one decision against batch size"></div><figcaption class="cap">Round cut. (a) Where the render time goes. (b) Cost of one interior decision against network batch size.</figcaption></figure>
+<figure class="reveal"><div class="graph"><img src="media/graphs/transfer.png" alt="Operators re-pointed from round to pear and from pear to step cut, beside native operators and references"></div><figcaption class="cap">An operator re-pointed at another cut without retraining keeps coarse brightness from round to pear, and fails outright from pear to step cut.</figcaption></figure>
+</div>
+</div>
+</section>
+
+<section class="chapter">
+<div class="wrap">
+<p class="pull reveal">Making the network <em>more accurate</em> made the diamond look more real, and match the real one less.</p>
+<div class="conclusions">
+<div class="reveal"><h3>H1 holds</h3><p class="muted" style="margin-top: 8px">Operator accuracy does not reach the image: the sharper decoders agree less on every cut.</p></div>
+<div class="reveal"><h3>H2 in part</h3><p class="muted" style="margin-top: 8px">Errors follow path length. The pavilion only fails when it is missing from training.</p></div>
+<div class="reveal"><h3>H3 holds</h3><p class="muted" style="margin-top: 8px">Each decision is faster, yet renders are 31% slower and never reach analytic quality.</p></div>
+</div>
+</div>
+</section>
+
+<footer>
+<div class="wrap">
+<div class="eyebrow">Next</div>
+<p style="margin-top: 10px">Radiance-weighted training, so the loss cares about exits the way the image does · local grid encodings that keep sharp changes local · repeating the study under other lighting.</p>
+<div class="eyebrow" style="margin-top: 34px">References</div>
+<div class="refs">
+<span>Soh &amp; Montazeri. Neural Appearance Model for Cloth Rendering. Computer Graphics Forum, 2024.</span>
+<span>Vicini, Koltun &amp; Jakob. A Learned Shape-Adaptive Subsurface Scattering Model. ACM TOG, 2019.</span>
+<span>Olano &amp; Baker. LEAN Mapping. I3D, 2010.</span>
+<span>Bishop. Mixture Density Networks. 1994.</span>
+</div>
+<p style="margin-top: 34px">Gopolang Mohlakola · School of Computer Science and Applied Mathematics, University of the Witwatersrand · <a href="https://github.com/Sally-Mohlakola/Research_2026">Code on GitHub</a></p>
+</div>
+</footer>
+
+<script>
+(function () {
+  // Seed-23 scores per cut: [correlation, contrast, energy] learned, then with the true facet.
+  var data = {
+    gia:  { floor: '0.974', ref: '3.72', heads: {
+      stochastic: [['0.127', '0.79', '+10%'], ['0.151', '0.98', '+9%']],
+      clone:      [['0.077', '1.73', '+8%'],  ['0.048', '2.73', '+5%']],
+      deep:       [['0.057', '1.53', '−2%'],  ['0.077', '2.50', '−9%']] } },
+    pear: { floor: '0.941', ref: '1.44', heads: {
+      stochastic: [['0.188', '0.50', '+17%'], ['0.310', '0.84', '+17%']],
+      clone:      [['0.121', '1.94', '+40%'], ['0.127', '4.90', '+45%']],
+      deep:       [['0.107', '1.41', '+34%'], ['0.107', '3.38', '+29%']] } },
+    step: { floor: '0.975', ref: '2.35', heads: {
+      stochastic: [['0.285', '0.60', '+15%'], ['0.373', '0.87', '+12%']],
+      clone:      [['0.060', '1.95', '+39%'], ['0.059', '4.16', '+39%']],
+      deep:       [['0.156', '1.34', '+16%'], ['0.125', '2.70', '+14%']] } }
+  };
+  var names = { stochastic: 'stochastic', clone: 'clone', deep: 'deep decoder' };
+  var cutNames = { gia: 'round cut', pear: 'pear', step: 'step cut' };
+  var notes = {
+    stochastic: 'Hedges between exits: brightness lands in roughly the right places, but the shards blur into a soft, even glow. The best agreement of the three.',
+    clone: 'Commits to one exit: real contrast appears, but in the wrong places, so agreement drops.',
+    deep: 'More capacity, still one committed exit: sharp, diamond-like flashes, mostly misplaced.'
+  };
+  var state = { cut: 'gia', head: 'stochastic', truefacet: false };
+  var compare = document.getElementById('compare');
+  var wipe = document.getElementById('wipe');
+  var img = document.getElementById('neuralImg');
+  var ref = document.getElementById('refImg');
+  function render() {
+    var d = data[state.cut], s = d.heads[state.head][state.truefacet ? 1 : 0];
+    img.src = 'media/still/' + state.cut + '_' + state.head + (state.truefacet ? '_truefacet' : '') + '.png';
+    ref.src = 'media/still/' + state.cut + '_reference.png';
+    var label = 'Neural: ' + names[state.head] + (state.truefacet ? ' + true facet' : '');
+    img.alt = label + ' render of the ' + cutNames[state.cut];
+    ref.alt = 'Exact reference render of the ' + cutNames[state.cut];
+    document.getElementById('leftLabel').textContent = label;
+    document.getElementById('sCorr').textContent = s[0];
+    document.getElementById('sFloor').textContent = 'noise floor ' + d.floor;
+    document.getElementById('sCon').textContent = s[1];
+    document.getElementById('sConRef').textContent = 'reference ' + d.ref;
+    document.getElementById('sEn').textContent = s[2];
+    document.getElementById('sNote').textContent = state.truefacet
+      ? 'An experiment, not a renderer: the exact tracer chooses each exit facet. Contrast rises toward the reference, but each shard is still misplaced within its facet.'
+      : notes[state.head];
+  }
+  function press(group, b) {
+    group.querySelectorAll('button').forEach(function (o) { o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+  }
+  document.querySelectorAll('[data-cut]').forEach(function (b) {
+    b.addEventListener('click', function () { state.cut = b.dataset.cut; press(b.parentNode, b); render(); });
+  });
+  document.querySelectorAll('[data-head]').forEach(function (b) {
+    b.addEventListener('click', function () { state.head = b.dataset.head; press(b.parentNode, b); render(); });
+  });
+  document.getElementById('truefacet').addEventListener('change', function (e) { state.truefacet = e.target.checked; render(); });
+  function setCut(v) { compare.style.setProperty('--cut', v + '%'); }
+  wipe.addEventListener('input', function () { setCut(wipe.value); });
+  function dragTo(clientX) {
+    var r = compare.getBoundingClientRect();
+    var v = Math.max(0, Math.min(100, (clientX - r.left) / r.width * 100));
+    wipe.value = Math.round(v); setCut(v);
+  }
+  var dragging = false;
+  compare.addEventListener('pointerdown', function (e) { dragging = true; compare.setPointerCapture(e.pointerId); dragTo(e.clientX); });
+  compare.addEventListener('pointermove', function (e) { if (dragging) dragTo(e.clientX); });
+  compare.addEventListener('pointerup', function () { dragging = false; });
+  render();
+
+  // Animation gallery: switch all four videos to one cut and restart them together.
+  var vids = { analytic: 'vAnalytic', stochastic: 'vStochastic', clone: 'vClone', deep: 'vDeep' };
+  document.querySelectorAll('[data-anim]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      press(b.parentNode, b);
+      Object.keys(vids).forEach(function (k) {
+        var v = document.getElementById(vids[k]);
+        v.src = 'media/anim/' + b.dataset.anim + '_' + k + '.mp4';
+        v.play().catch(function () {});
+      });
+    });
+  });
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) { document.querySelectorAll('video').forEach(function (v) { v.removeAttribute('autoplay'); v.pause(); v.controls = true; }); }
+
+  // Reveal chapters as they scroll in, and mark the active chapter in the nav.
+  var items = document.querySelectorAll('.reveal');
+  if (reduce || !('IntersectionObserver' in window)) {
+    items.forEach(function (el) { el.classList.add('in'); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+    }, { threshold: 0.12 });
+    items.forEach(function (el) { io.observe(el); });
+  }
+  var links = document.querySelectorAll('.nav-links a');
+  if ('IntersectionObserver' in window) {
+    var nav = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id); });
+        }
+      });
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    document.querySelectorAll('section.chapter[id]').forEach(function (s) { nav.observe(s); });
+  }
+})();
+</script>
+</body>
+
+</html>
